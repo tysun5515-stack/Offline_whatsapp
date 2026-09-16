@@ -1,0 +1,7 @@
+Flask==3.0.3
+geoip2==4.8.0
+plotly
+pyshark
+matplotlib
+scipy
+numpy

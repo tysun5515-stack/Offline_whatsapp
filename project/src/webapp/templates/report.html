@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>WhatsApp Traffic Analysis Report - {{ report_id }}</title>
+<style>
+  body {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    color: #333;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+    background-color: #f9fafb;
+  }
+  .page {
+    max-width: 800px;
+    margin: 40px auto;
+    background: #fff;
+    padding: 40px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    border-radius: 8px;
+  }
+  @media print {
+    body { background-color: #fff; }
+    .page { box-shadow: none; margin: 0 auto; padding: 20px; }
+    .no-print { display: none; }
+    .page-break { page-break-before: always; }
+  }
+  h1, h2, h3 { color: #111827; }
+  h1 { border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }
+  h2 { margin-top: 30px; border-bottom: 1px solid #e5e7eb; padding-bottom: 5px; }
+  .meta-data {
+    background: #f3f4f6;
+    padding: 15px;
+    border-radius: 6px;
+    margin-bottom: 20px;
+  }
+  .meta-data p { margin: 5px 0; font-size: 14px; }
+  .metrics-grid {
+    display: flex;
+    gap: 20px;
+    margin: 20px 0;
+  }
+  .metric-box {
+    flex: 1;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    padding: 15px;
+    border-radius: 6px;
+    text-align: center;
+  }
+  .metric-box h4 { margin: 0 0 5px 0; color: #1e40af; font-size: 12px; text-transform: uppercase; }
+  .metric-box p { margin: 0; font-size: 24px; font-weight: bold; color: #1d4ed8; }
+  
+  table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 12px; }
+  th, td { padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: left; }
+  th { background-color: #f9fafb; font-weight: bold; }
+  tr:nth-child(even) { background-color: #f9fafb; }
+  
+  .badge {
+    padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;
+  }
+  .badge.high { background: #d1fae5; color: #065f46; }
+  .badge.medium { background: #fef3c7; color: #92400e; }
+  .badge.low { background: #fee2e2; color: #991b1b; }
+  .badge.none { background: #f3f4f6; color: #4b5563; }
+  
+  .chart-container { margin: 20px 0; padding: 20px; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; display: flex; justify-content: center; }
+  
+  .rule-box {
+    background: #f8fafc;
+    border-left: 4px solid #3b82f6;
+    padding: 10px 15px;
+    margin-bottom: 10px;
+    border-radius: 0 4px 4px 0;
+  }
+  .rule-box h4 { margin: 0 0 5px 0; color: #0f172a; font-size: 14px; }
+  .rule-box p { margin: 0; font-size: 13px; color: #475569; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; page-break-inside: avoid; }
+  .pie-wrap { display: flex; align-items: center; gap: 24px; }
+  .chart-legend { font-family: sans-serif; font-size: 12px; display: flex; flex-direction: column; gap: 7px; }
+  .legend-dot { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 7px; }
+  .empty-chart { color: #6b7280; }
+  .custody-table { font-size: 10px; table-layout: fixed; word-break: break-word; }
+  .custody-table th, .custody-table td { vertical-align: top; }
+  .scope-note { padding: 12px; border-left: 4px solid #f59e0b; background: #fffbeb; color: #78350f; border-radius: 4px; font-size: 13px; }</style>
+</head>
+<body>
+
+<div class="no-print" style="text-align: center; padding: 20px; background: #1e293b; color: white;">
+  <button onclick="window.print()" style="background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;">Print / Save as PDF</button>
+  <p style="margin: 10px 0 0 0; font-size: 12px;">Use the browser's print dialog to save this offline report as a PDF.</p>
+</div>
+
+<div class="page">
+  <div style="text-align: right; color: #6b7280; font-size: 12px; margin-bottom: 20px;">
+    Generated (IST): {{ generated_at }}
+  </div>
+  
+  <h1>WhatsApp Traffic Analysis Report</h1>
+  
+  <div class="meta-data">
+    <p><strong>Evidence Scope Report ID:</strong> {{ report_id }}</p>
+    <p><strong>Capture Scope (IST):</strong> {{ range_start }} to {{ range_end }}</p>
+    <p><strong>Filtered Evidence Analyzed:</strong> {% for file in files %}{{ file.filename }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    <p><strong>Report Scope:</strong> {{ phases|join(', ') | title }}</p>
+  </div>
+
+  <h2>Executive Summary</h2>
+  <p>This report details the offline forensic classification of validated filtered network evidence. It contains <strong>{{ metrics.filtered_packets }}</strong> indexed WhatsApp packets in <strong>{{ metrics.total_flows }}</strong> discrete flows within the selected IST capture scope.</p>
+  
+  <div class="metrics-grid">
+    <div class="metric-box">
+      <h4>{% if full_capture_scope %}Source Capture Packets{% else %}Filtered Packets in Scope{% endif %}</h4>
+      <p>{{ metrics.true_total_packets }}</p>
+    </div>
+    <div class="metric-box">
+      <h4>Filtered WA Packets</h4>
+      <p>{{ metrics.wa_packets }}</p>
+    </div>
+    <div class="metric-box">
+      <h4>WA Flows</h4>
+      <p>{{ metrics.total_flows }}</p>
+    </div>
+  </div>
+
+
+  {% if "filtration" in phases %}
+  <h2>Filtration Phase</h2>
+  
+  {% if bypass_mode %}
+  <div style="background-color: #fff7ed; border-left: 4px solid #f97316; padding: 12px; margin-bottom: 20px; color: #9a3412; border-radius: 4px;">
+    <strong>⚠️ Bypass Mode Active</strong>
+    <p style="margin: 4px 0 0 0; font-size: 13px;">{{ filter_note }} The WhatsApp filtration rules below were NOT applied. All captured packets are included in this report.</p>
+  </div>
+  {% else %}
+  <p>{{ filtration_note }}</p>{% if not full_capture_scope %}<div class="scope-note">The selected date range only partially covers one or more source captures. Exact RAW exclusion totals are not calculated for this report.</div>{% endif %}
+  <p>The filtration phase separates WhatsApp traffic from background noise. The following pie chart illustrates the proportion of accepted WhatsApp traffic.</p>
+  {% endif %}
+  
+  <div class="chart-container">
+    {{ filtration_pie|safe }}
+  </div>
+  
+  {% if not bypass_mode %}
+  <h3>Primary Filtration Rules Applied</h3>
+  <p>These rules were evaluated in sequence. Traffic matching a rule was accepted. Traffic failing all rules was rejected.</p>
+  {% for rule in rulebook %}
+  <div class="rule-box">
+    <h4>{{ rule.id }}. {{ rule.title }} ({{ rule.confidence }} Priority)</h4>
+    <p><strong>Condition:</strong> {{ rule.description }}</p>
+    <p><strong>Result:</strong> {{ rule.result }}</p>
+  </div>
+  {% endfor %}
+  <p style="font-size: 13px; color: #4b5563;"><em>Note: Any packet failing all the above checks is rejected as non-WhatsApp traffic.</em></p>
+  {% endif %}
+  {% endif %}
+
+  {% if "classification" in phases %}
+  <div class="page-break"></div>
+  <h2>Traffic Classification</h2>
+  <p>Filtered traffic is further sub-classified into media types (voice, video, photo, message) based on payload characteristics, protocol, and sustained bitrates.</p>
+  
+  {% if media_pie %}
+  <div class="chart-container">
+    {{ media_pie|safe }}
+  </div>
+  {% else %}
+  <p><em>No classified media found in the selected scope.</em></p>
+  {% endif %}
+  
+  <h3>Classification Logic</h3>
+  <div class="rule-box">
+    <h4>Voice / Video Calls</h4>
+    <p>Identified via UDP streams on dynamic high ports (>1024) exceeding VoIP bitrate thresholds (12kbps for voice, 50kbps asymmetric for video) following a STUN binding handshake.</p>
+  </div>
+  <div class="rule-box">
+    <h4>Media Transfers (Photo/Audio)</h4>
+    <p>Identified via TCP port 443 (TLS) utilizing SNI prefixes like <code>mmi</code> or <code>mms</code> (media servers), often characterized by sudden burst transfers.</p>
+  </div>
+  <div class="rule-box">
+    <h4>Chat Messaging</h4>
+    <p>Identified via persistent TCP connections on ports 5222, 5223, or 4244 characterized by small, intermittent encrypted frames (Noise/XMPP protocol).</p>
+  </div>
+  {% endif %}
+
+  {% if "classification" in phases or "filtration" in phases %}
+  <div class="page-break"></div>
+  <h2>Per-Flow Summary</h2>
+  <p>The following table lists up to 200 distinct communication flows identified in the scope.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Start Time</th>
+        <th>Source</th>
+        <th>Dest</th>
+        <th>Proto</th>
+        <th>Pkts</th>
+        <th>Bytes</th>
+        <th>Media Type</th>
+        <th>Conf</th>
+        <th>Why Classified</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in flow_summary %}
+      <tr>
+        <td>{{ f.start_time_ist }}</td>
+        <td>{{ f.src_ip }}:{{ f.src_port }}</td>
+        <td>{{ f.dst_ip }}:{{ f.dst_port }}</td>
+        <td>{{ f.protocol }}</td>
+        <td>{{ f.packets }}</td>
+        <td>{{ f.bytes }}</td>
+        <td>{{ f.whatsapp_media_guess|replace('_', ' ')|title }}</td>
+        <td><span class="badge {{ f.whatsapp_confidence|lower }}">{{ f.whatsapp_confidence }}</span></td>
+        <td>
+          <span style="font-size: 10px; background: #e5e7eb; padding: 2px 6px; border-radius: 4px; white-space: nowrap;">
+            {% if bypass_mode %}Bypassed
+            {% elif f.whatsapp_confidence|lower == 'high' %}Domain/IP Match
+            {% elif f.whatsapp_confidence|lower == 'medium' %}Port/Server Inference
+            {% elif f.whatsapp_confidence|lower == 'low' %}Heuristic
+            {% else %}None{% endif %}
+          </span>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" style="text-align:center;">No flows found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if "geolocation" in phases %}
+  <div class="page-break"></div>
+  <h2>Geolocation & Infrastructure Report</h2>
+  <p>The table below details the remote parties involved in WhatsApp communication.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Remote IP</th>
+        <th>Country</th>
+        <th>ASN Organization</th>
+        <th>Role</th>
+        <th>Packets</th>
+        <th>Why</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in geo_parties %}
+      <tr>
+        <td style="font-family: monospace;">{{ p.remote_ip }}</td>
+        <td>{{ p.country }}</td>
+        <td>{{ p.asn_org }}</td>
+        <td>{{ p.role_label or p.party_type|title }}</td>
+        <td>{{ p.packet_count }}</td>
+        <td style="font-size: 11px; color: #4b5563;">{{ p.caveat_label }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" style="text-align:center;">No parties found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  
+  <div style="margin-top: 20px;">
+    <h3 style="font-size: 14px; margin-bottom: 10px;">Classification Legend</h3>
+    <ul style="font-size: 12px; color: #4b5563; padding-left: 20px;">
+      <li><strong>Call Relay (TURN):</strong> Meta/Facebook ASN UDP port > 1024. This is a relay server, NOT the actual peer. Location is a data center.</li>
+      <li><strong>WhatsApp Chat Server:</strong> Meta ASN TCP port 443/5222/5228. Messages transit via WhatsApp's infrastructure.</li>
+      <li><strong>WhatsApp Media CDN:</strong> Meta ASN TCP port 443. CDN edge for media delivery.</li>
+      <li><strong>Direct Peer:</strong> Non-Meta IP on call-type port. Location is likely the other caller's ISP exit.</li>
+      <li><strong>Caveated (VPN/CGNAT):</strong> Location is unreliable; party is behind a VPN, CGNAT, or uses a Private IP.</li>
+    </ul>
+  </div>
+  
+  <div style="margin-top: 20px; padding: 15px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px;">
+    <h4 style="margin: 0 0 5px 0; color: #92400e; font-size: 13px;"><i class="fa-solid fa-triangle-exclamation"></i> Geolocation Caveat</h4>
+    <p style="margin: 0; font-size: 12px; color: #78350f;">WhatsApp uses CDN edge nodes to route traffic. The country listed reflects the location of the Meta/Facebook server handling the traffic, not necessarily the physical location of the other person in a chat, unless the connection was established peer-to-peer (P2P).</p>
+  </div>
+  {% endif %}
+
+  <div class="page-break"></div>
+  <h2>Evidence Chain of Custody</h2>
+  <p>The following records identify every validated filtered artifact used in this report.</p>
+  <table class="custody-table">
+    <thead><tr><th>Raw / Filtered Evidence</th><th>Capture Window (IST)</th><th>Format / Size</th><th>Source / Filtered Packets</th><th>SHA-256 Fingerprints</th><th>Filtered Created</th></tr></thead>
+    <tbody>{% for row in custody_rows %}<tr><td><strong>{{ row.filename }}</strong><br>{{ row.filtered_filename }}</td><td>{{ row.capture_window }}</td><td>{{ row.raw_format }} / {{ row.raw_size }}<br>{{ row.filtered_format }} / {{ row.filtered_size }}</td><td>{{ row.source_packets }} / {{ row.filtered_packets }}</td><td>RAW: {{ row.raw_sha256 }}<br>FILTERED: {{ row.filtered_sha256 }}</td><td>{{ row.filtered_created_at }}</td></tr>{% else %}<tr><td colspan="6" style="text-align:center;">No chain-of-custody records are available.</td></tr>{% endfor %}</tbody>
+  </table>
+</div>
+</body>
+</html>

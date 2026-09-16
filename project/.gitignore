@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.db
+uploads/
+venv/
+.env
+.DS_Store
+.venv_win/
+check.py
+rewrite_app.py

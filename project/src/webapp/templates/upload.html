@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head><title>Upload</title></head>
+<body>
+    <h1>Upload PCAP</h1>
+    {% if error %}
+        <p style="color: red;">{{ error }}</p>
+    {% endif %}
+    <form method="POST" action="/upload" enctype="multipart/form-data">
+        <input type="file" name="pcap_file">
+        <input type="submit" value="Upload">
+    </form>
+</body>
+</html>

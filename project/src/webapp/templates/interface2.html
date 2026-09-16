@@ -1,0 +1,32 @@
+{% extends "layout.html" %}
+{% block title %}Filter Traffic — WA Analytics{% endblock %}
+{% block dashboard %}
+<div class="mb-6">
+  <div class="flex items-center text-xs text-gray-500 mb-1"><span>Pipeline</span><span class="mx-2">›</span><span class="text-blue-600 font-semibold">Filter Traffic</span></div>
+  <h2 class="text-2xl font-bold text-gray-900">WhatsApp Traffic Filter</h2>
+  <p class="text-gray-500 text-sm mt-1">Filter raw evidence into validated WhatsApp-only PCAP files. Deep Inspection and Core Analysis use Filtered_PCAP only.</p>
+</div>
+{% if range_error %}<div class="mb-5 p-4 rounded bg-red-50 text-red-700 text-sm">{{ range_error }}</div>{% endif %}
+{% if not uploads %}
+<div class="bg-blue-50 border border-blue-200 rounded-xl p-8 text-center">
+  <i class="fa-solid fa-filter-circle-xmark text-blue-300 text-4xl mb-3"></i>
+  <h3 class="text-lg font-semibold text-blue-800">No raw evidence is available in this capture range</h3>
+  <p class="text-sm text-blue-700 mt-1">Register PCAP evidence or select RAW_PCAP files in Evidence Storage, then run the filter.</p>
+  <div class="mt-4 flex gap-3 justify-center"><a href="{{ url_for('interface1') }}" class="px-4 py-2 rounded bg-blue-600 text-white text-sm">Upload Evidence</a><a href="{{ url_for('evidence_storage', view='raw') }}" class="px-4 py-2 rounded border text-sm">Open RAW_PCAP</a></div>
+</div>
+{% else %}
+{% set raw_pending = uploads | selectattr('filtered_status', 'ne', 'filtered_output_created') | list | length %}
+<div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+  <div class="bg-white p-4 rounded-xl border shadow-sm"><div class="text-xs text-gray-500">RAW evidence in scope</div><div class="text-2xl font-bold">{{ uploads|length }}</div></div><div class="bg-white p-4 rounded-xl border shadow-sm"><div class="text-xs text-gray-500">Source capture packets</div><div class="text-2xl font-bold">{{ source_packet_count }}</div><div class="text-[10px] text-gray-400 mt-1">Full selected RAW captures</div></div>
+  <div class="bg-white p-4 rounded-xl border shadow-sm"><div class="text-xs text-gray-500">Filtered PCAP outputs</div><div class="text-2xl font-bold text-teal-700">{{ filtered_uploads|length }}</div></div>
+  <div class="bg-white p-4 rounded-xl border shadow-sm"><div class="text-xs text-gray-500">Awaiting / re-filter</div><div class="text-2xl font-bold text-amber-700">{{ raw_pending }}</div></div>
+  <div class="bg-white p-4 rounded-xl border shadow-sm"><div class="text-xs text-gray-500">Indexed filtered packets</div><div class="text-2xl font-bold">{{ filter_stats.packet_count if filter_stats else 0 }}</div></div>
+</div>
+<div class="bg-white p-5 rounded-xl border shadow-sm mb-6">
+ <div class="flex flex-wrap gap-4 items-center justify-between"><div><h3 class="font-semibold">Run WhatsApp filtering</h3><p class="text-xs text-gray-500 mt-1">Processes every RAW PCAP in this scope with the existing classification rules. Existing filtered derivatives are safely replaced.</p></div><button id="btn-run-filter" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium"><i class="fa-solid fa-filter mr-2"></i>Filter evidence in scope</button></div>
+ <div class="hidden mt-4 h-1.5 bg-gray-200 rounded" id="filter-progress"><div class="h-1.5 bg-blue-600 rounded" style="width:0%"></div></div><div id="filter-status" class="hidden mt-3 text-sm"></div><div id="filter-outcomes" class="hidden mt-3 text-xs"></div>
+</div>
+<div class="bg-white rounded-xl border shadow-sm overflow-hidden"><div class="p-4 border-b flex flex-wrap gap-3 justify-between"><div><h3 class="font-semibold">Evidence filtering status</h3><p class="text-xs text-gray-500">A filtered badge means a validated derivative exists, not merely that filtering was attempted.</p></div><div class="flex gap-2"><a href="{{ url_for('evidence_storage', view='filtered') }}" class="border rounded px-3 py-2 text-sm text-teal-700">Filtered_PCAP</a>{% if filtered_uploads %}<a href="{{ url_for('interface3', capture_from=capture_from, capture_to=capture_to) }}" class="bg-teal-600 text-white rounded px-3 py-2 text-sm">Open Core Analysis</a>{% endif %}</div></div>
+<table class="w-full text-left text-xs"><thead class="bg-gray-50 text-gray-500"><tr><th class="p-3">Filename</th><th class="p-3">Capture window (IST)</th><th class="p-3">Status</th><th class="p-3">Next action</th></tr></thead><tbody>{% for u in uploads %}<tr class="border-t"><td class="p-3 font-mono">{{ u.filename }}</td><td class="p-3">{{ ist_format(u.capture_start_ts) }}</td><td class="p-3">{% if u.filtered_status == 'filtered_output_created' %}<span class="text-teal-700 font-medium">Filtered output created</span>{% elif u.filtered_status == 'no_whatsapp_match' %}<span class="text-amber-700">No WhatsApp match — no filtered PCAP created</span>{% elif u.filtered_status == 'filter_error' %}<span class="text-red-700">Filter error</span>{% else %}<span class="text-gray-600">Not filtered</span>{% endif %}</td><td class="p-3">{% if u.filtered_status == 'filtered_output_created' %}<a href="{{ url_for('classification', file=u.filename, capture_from=request.args.get('capture_from'), capture_to=request.args.get('capture_to')) }}" class="text-blue-600">Inspect packets</a>{% else %}<span class="text-gray-400">Filter this evidence</span>{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+{% endif %}
+{% endblock %}

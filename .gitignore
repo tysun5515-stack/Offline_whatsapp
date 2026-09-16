@@ -1,0 +1,9 @@
+project/.venv/
+project/__pycache__/
+project/*.db
+project/uploads/
+project/RAW_PCAP/
+project/Filtered_PCAP/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,430 @@
+{% extends "layout.html" %}
+{% block title %}Core Analysis — WA Analytics{% endblock %}
+
+{% block dashboard %}
+
+{% set is_registered = uploads | selectattr('status', 'equalto', 'registered') | list | length == uploads | length %}
+{% set is_analyzed = uploads | selectattr('status', 'equalto', 'analyzed') | list | length > 0 %}
+{% set batch_status = 'registered' %}
+{% if is_analyzed %}
+  {% set batch_status = 'analyzed' %}
+{% elif uploads | selectattr('status', 'equalto', 'filtered') | list | length > 0 %}
+  {% set batch_status = 'filtered' %}
+{% endif %}
+
+<div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+  <div>
+    <nav class="text-sm text-gray-500 mb-1">
+      Pipeline &raquo; <span class="text-indigo-600 font-semibold">Core Analysis</span>
+    </nav>
+    <h1 class="text-2xl font-bold text-gray-800">Core Analysis &amp; Geolocation (Case Level)</h1>
+    <p class="text-sm text-gray-500">Entity grouping · GeoIP + rDNS · World map · VPN / CGNAT caveats for entire case</p>
+  </div>
+  {% if uploads %}
+  <div class="flex gap-2 mt-2 md:mt-0">
+    <button class="inline-flex items-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md" id="btn-run-analyze-case" >
+      {% if batch_status == 'analyzed' %}↺ Re-run{% else %}▶ Run Analysis on Case{% endif %}
+    </button>
+    {% if batch_status == 'analyzed' %}
+    <span class="inline-flex items-center px-3 py-1 bg-green-100 text-green-700 text-xs font-medium rounded-md">✓ Case Analyzed</span>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{% if not uploads %}
+<div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded-md flex items-center space-x-2">
+  ⚠ No case selected. Use the case selector in the sidebar.
+</div>
+{% elif batch_status == 'registered' %}
+<div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded-md flex items-center justify-between">
+  <span>⚠ This case has not been filtered yet.</span>
+  <a href="{{ url_for('interface2', capture_from=capture_from, capture_to=capture_to) }}" class="inline-flex items-center px-3 py-1 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-100" style="margin-left:8px;">Go to Filter →</a>
+</div>
+{% else %}
+
+<div id="analyze-status" class="hidden mb-3"></div>
+
+{% if bypass_mode %}
+<div class="bg-amber-50 border-l-4 border-amber-500 text-amber-900 p-4 mb-4 rounded-md text-sm">
+  <strong>Bypass mode is active.</strong> Confirmed WhatsApp entities and retained unclassified traffic are shown separately below. Unclassified traffic has no WhatsApp-specific conclusion.
+</div>
+{% endif %}
+
+{% if parties %}
+<style>
+.kpi-row{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:16px;}
+.kpi{background:var(--surface-0);border-radius:var(--radius);padding:14px 16px;border:0.5px solid var(--border);background-color:#fff;}
+.kpi-l{font-size:12px;color:var(--text-secondary);font-weight:500;}
+.kpi-v{font-size:24px;font-weight:600;color:var(--text-primary);margin-top:4px;line-height:1;}
+.kpi-v.warn{color:var(--text-warning);}
+
+.split{display:grid;grid-template-columns:240px 1fr;border:0.5px solid var(--border);border-radius:var(--radius);background:#fff;overflow:hidden;margin-bottom:24px;}
+.file-panel{border-right:0.5px solid var(--border);background:var(--surface-0);}
+.fp-head{padding:12px 16px;font-size:12px;font-weight:600;color:var(--text-secondary);border-bottom:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center;background:#f9fafb;}
+.fp-head button{font-size:11px;color:var(--text-accent);background:none;border:none;cursor:pointer;font-weight:500;}
+.file-item{display:flex;align-items:center;gap:10px;padding:10px 16px;cursor:pointer;border-bottom:0.5px solid var(--border);transition:background 0.1s;background:#fff;}
+.file-item:hover{background:#f9fafb;}
+.file-item.on{background:#f0f7ff;}
+.fi-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;transition:opacity .15s;}
+.fi-body{flex:1;min-width:0;}
+.fi-name{font-size:12px;font-weight:500;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.fi-name.dim{color:var(--text-muted);}
+.fi-bar-bg{width:100%;height:4px;background:#e5e7eb;border-radius:2px;margin-top:6px;}
+.fi-bar{height:4px;border-radius:2px;transition:width .25s;}
+.fi-count{font-size:11px;font-weight:500;white-space:nowrap;transition:color .15s;}
+
+.map-wrap{position:relative;height:320px;background:#f8fafc;overflow:hidden;}
+.map-legend{display:flex;flex-wrap:wrap;gap:16px;padding:12px 16px;font-size:12px;color:var(--text-secondary);border-top:0.5px solid var(--border);background:#fff;}
+.ml-item{display:flex;align-items:center;gap:6px;}
+.ml-dot{width:10px;height:10px;border-radius:50%;}
+.ml-line-udp{width:20px;height:2px;border-radius:1px;background:currentColor;opacity:0.7;}
+.ml-line-tcp{width:20px;height:2px;border-top:2px dashed currentColor;}
+
+.dist-wrap{display:flex;flex-direction:column;gap:8px;padding:16px;background:#fff;border:0.5px solid var(--border);border-radius:var(--radius);margin-bottom:24px;}
+.dist-row{display:flex;align-items:center;gap:12px;}
+.dist-lbl{font-size:12px;color:var(--text-secondary);width:64px;text-align:right;flex-shrink:0;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dist-track{flex:1;display:flex;height:24px;border-radius:6px;overflow:hidden;background:#f3f4f6;}
+.dist-seg{height:100%;transition:width .3s;display:flex;align-items:center;justify-content:center;}
+.dist-cnt{font-size:11px;font-weight:500;color:var(--text-muted);white-space:nowrap;width:56px;flex-shrink:0;}
+.dist-pct{font-size:11px;font-weight:600;color:var(--text-muted);width:44px;flex-shrink:0;text-align:right;}
+
+.tab-bar{display:flex;border-bottom:0.5px solid var(--border);margin-bottom:16px;}
+.tab{padding:10px 16px;font-size:13px;font-weight:500;color:var(--text-muted);cursor:pointer;border-bottom:2px solid transparent;transition:all .1s;}
+.tab.on{color:var(--text-accent);border-bottom-color:var(--text-accent);}
+
+.proto-udp{background:#e0f2fe;color:#0369a1;font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px;}
+.proto-tcp{background:#dcfce7;color:#15803d;font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px;}
+.role-pill{background:#f3f4f6;border:0.5px solid #e5e7eb;border-radius:4px;padding:2px 8px;font-size:11px;color:#4b5563;white-space:nowrap;}
+.role-cdn{background:#eff6ff;border:0.5px solid #bfdbfe;color:#1d4ed8;font-weight:500;}
+.fdot{width:10px;height:10px;border-radius:3px;display:inline-block;}
+.party-filter-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}
+.party-filter-control{font-size:12px;border:1px solid #d1d5db;border-radius:6px;padding:7px 9px;background:#fff;color:#374151;}
+.party-filter-search{min-width:240px;flex:1;}
+.ip-class-badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:700;white-space:nowrap;}
+.ip-class-p2p{background:#dcfce7;color:#166534;}.ip-class-server{background:#dbeafe;color:#1d4ed8;}.ip-class-warning{background:#fef3c7;color:#92400e;}.ip-class-unclassified{background:#e5e7eb;color:#475569;}
+.ip-guide{margin-bottom:12px;border:1px solid #dbeafe;border-radius:8px;background:#f8fbff;}.ip-guide summary{cursor:pointer;padding:10px 12px;font-size:12px;font-weight:600;color:#1d4ed8;}.ip-guide-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:8px;padding:0 12px 12px;}.ip-guide-item{font-size:11px;color:#4b5563;line-height:1.4;}
+</style>
+
+<div class="kpi-row">
+  <div class="kpi"><div class="kpi-l">Unique Parties</div><div class="kpi-v">{{ parties | length }}</div></div>
+  <div class="kpi"><div class="kpi-l">Total Packets</div><div class="kpi-v">{{ parties | sum(attribute='packet_count') }}</div></div>
+  <div class="kpi"><div class="kpi-l">Confirmed WA Entities</div><div class="kpi-v">{{ parties | selectattr('traffic_class','eq','confirmed_whatsapp') | list | length }}</div></div>
+  <div class="kpi"><div class="kpi-l">Unclassified Endpoints</div><div class="kpi-v">{{ parties | selectattr('traffic_class','eq','unclassified') | list | length }}</div></div>
+  <div class="kpi"><div class="kpi-l">Client → Server</div><div class="kpi-v">{{ parties | selectattr('party_type','eq','client_to_server') | list | length }}</div></div>
+  <div class="kpi"><div class="kpi-l">Peer → Peer</div><div class="kpi-v">{{ parties | selectattr('is_p2p','eq',1) | list | length }}</div></div>
+  <div class="kpi"><div class="kpi-l">Relay Servers</div><div class="kpi-v">{{ parties | selectattr('caveat_type','eq','relay_server') | list | length }}</div></div>
+  <div class="kpi"><div class="kpi-l">Caveated Parties</div><div class="kpi-v {% if caveated_count > 0 %}warn{% endif %}">{{ caveated_count }}</div></div>
+</div>
+
+{% if caveated_count > 0 %}
+<div class="bg-orange-50 border-l-4 border-orange-500 text-orange-800 p-4 mb-6 rounded-md text-sm">
+  ⚠ <strong>{{ caveated_count }} parties</strong> have geographic uncertainty (VPN exit node or CGNAT). See caveat column.
+</div>
+{% endif %}
+
+<h2 class="text-lg font-semibold text-gray-800 mb-3">Geographic Traffic Flow</h2>
+<div class="split shadow-sm">
+  <div class="file-panel flex flex-col">
+    <div class="fp-head">
+      <span>Capture files</span>
+      <button onclick="allFiles()">Show All</button>
+    </div>
+    <div id="fileList" class="flex-1 overflow-y-auto max-h-[360px]"></div>
+  </div>
+  <div style="display:flex;flex-direction:column;" class="flex-1 min-w-0">
+    <div class="map-wrap bg-gray-50 border rounded-md overflow-hidden relative" style="min-height: 360px; height: 100%;">
+      {{ map_html | safe }}
+    </div>
+  </div>
+</div>
+
+<div class="flex justify-between items-end mb-3">
+  <h2 class="text-lg font-semibold text-gray-800">Packet distribution by file</h2>
+  <div class="flex gap-4 text-xs font-medium">
+    <div class="flex items-center gap-2"><span style="width:12px;height:12px;border-radius:3px;background:#10b981;display:inline-block;"></span><span class="text-gray-600">WhatsApp traffic</span></div>
+    <div class="flex items-center gap-2"><span style="width:12px;height:12px;border-radius:3px;background:#e5e7eb;display:inline-block;"></span><span class="text-gray-600">Other / noise</span></div>
+  </div>
+</div>
+<div class="dist-wrap shadow-sm" id="distWrap"></div>
+
+<div class="tab-bar">
+  <div class="tab on" id="tab-p" onclick="showTab('p')">Party Details (Aggregated)</div>
+  <div class="tab" id="tab-s" onclick="showTab('s')">Session Timeline</div>
+</div>
+
+<div class="party-filter-bar" aria-label="Party Details filters">
+  <input id="party-search" class="party-filter-control party-filter-search" type="search" placeholder="Search IP, provider, activity, country, or file">
+  <select id="party-ip-class-filter" class="party-filter-control" aria-label="IP classification filter">
+    <option value="all">All IP Classes</option>
+    <option value="p2p">P2P</option>
+    <option value="server">Server</option>
+  </select>
+  <select id="party-confidence-filter" class="party-filter-control" aria-label="Confidence filter">
+    <option value="all">All Confidence</option>
+    <option value="high">High</option>
+    <option value="medium">Medium</option>
+    <option value="infrastructure">Infrastructure</option>
+    <option value="unclassified">Unclassified</option>
+  </select>
+  <button id="party-filter-reset" type="button" class="party-filter-control">Reset</button>
+  <span id="party-filter-count" class="text-xs text-gray-500"></span>
+</div>
+
+<div class="flex gap-4">
+  <details class="ip-guide flex-1">
+    <summary><i class="fa-solid fa-circle-info mr-1"></i> IP Classification Guide</summary>
+    <div class="ip-guide-grid">
+      <div class="ip-guide-item"><strong>P2P (Call)</strong> — likely direct call peer; strongest candidate for the actual remote participant.</div>
+      <div class="ip-guide-item"><strong>Server (Chat)</strong> — WhatsApp messaging/chat infrastructure.</div>
+      <div class="ip-guide-item"><strong>Server (Media: Photo)</strong> — server interaction dominated by photo-transfer traffic.</div>
+      <div class="ip-guide-item"><strong>Server (Media: Audio)</strong> — server interaction dominated by voice-note/audio transfer traffic.</div>
+      <div class="ip-guide-item"><strong>Server (Media: Video)</strong> — server interaction dominated by video-transfer traffic.</div>
+      <div class="ip-guide-item"><strong>Server (Media: Other)</strong> — confirmed media server with no reliable photo/audio/video subtype.</div>
+      <div class="ip-guide-item"><strong>Server (Call Relay)</strong> — TURN/STUN/call relay; never the actual call peer.</div>
+      <div class="ip-guide-item"><strong>Server (DNS)</strong> — DNS resolver.</div>
+      <div class="ip-guide-item"><strong>Server (CDN)</strong> — generic CDN/proxy edge.</div>
+      <div class="ip-guide-item"><strong>Server (Hosting)</strong> — cloud/hosting-provider endpoint.</div>
+      <div class="ip-guide-item"><strong>Server (VPN Exit)</strong> — VPN exit node; location may be unreliable.</div>
+      <div class="ip-guide-item"><strong>Server (CGNAT)</strong> — carrier-grade NAT gateway; not the actual device location.</div>
+      <div class="ip-guide-item"><strong>Server (General)</strong> — identified server interaction without a more precise purpose.</div>
+      <div class="ip-guide-item"><strong>Unclassified (Bypass)</strong> — bypass-retained traffic with no WA endpoint conclusion.</div>
+    </div>
+  </details>
+  <details class="ip-guide flex-1">
+    <summary><i class="fa-solid fa-shield-halved mr-1"></i> Confidence Legend</summary>
+    <div class="ip-guide-grid" style="grid-template-columns: 1fr;">
+      <div class="ip-guide-item"><strong>High</strong> — Confirmed by payload structure and port heuristics. (Green shield)</div>
+      <div class="ip-guide-item"><strong>Medium</strong> — Weak payload heuristic, but highly probable endpoint behavior. (Yellow shield)</div>
+      <div class="ip-guide-item"><strong>Infrastructure</strong> — Meta-owned ASN/IP range associated with WhatsApp. (Blue shield)</div>
+      <div class="ip-guide-item"><strong>Unclassified</strong> — Bypass traffic retained for manual review. (Gray badge)</div>
+      <div class="ip-guide-item"><strong>None</strong> — No WhatsApp classification applied.</div>
+    </div>
+  </details>
+</div>
+
+<div id="pane-p" class="bg-white rounded-xl shadow-sm border overflow-x-auto mb-6">
+  <table class="min-w-full divide-y divide-gray-200">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Remote IP</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Files</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Proto</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">IP Classification</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Packets</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Bytes</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Duration</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Role</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Activity</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Confidence</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Location</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider"></th>
+      </tr>
+    </thead>
+    <tbody class="bg-white divide-y divide-gray-200" id="partyBody"></tbody>
+  </table>
+</div>
+
+<div id="pane-s" class="bg-white rounded-xl shadow-sm border p-6 mb-6" style="display:none;">
+  <div class="text-sm text-gray-500 mb-4">Session duration per party. Bar width = relative duration. Filter by clicking files above.</div>
+  <div id="timeline" class="space-y-3"></div>
+</div>
+
+<!-- Next step -->
+<div style="margin-top:16px; display:flex; justify-content:flex-end;">
+  <a class="inline-flex items-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md shadow-sm transition-colors" href="{{ url_for('interface5', capture_from=capture_from, capture_to=capture_to) }}">
+    Generate Report →
+  </a>
+</div>
+
+<script>
+const FILES = {{ files_json | safe }};
+const PARTIES = {{ parties_json | safe }};
+const NODES = {{ nodes_json | safe }};
+const ARCS = {{ arcs_json | safe }};
+
+const maxTotal = Math.max(...FILES.map(f=>f.total), 1);
+let active = new Set(FILES.map((_,i)=>i));
+let mapW=0, mapH=0;
+let partySearch = '';
+let partyIpClassFilter = 'all';
+let partyConfidenceFilter = 'all';
+
+function fileActive(i){ return active.has(i); }
+
+function renderFileList(){
+  const el = document.getElementById('fileList');
+  el.innerHTML = FILES.map((f,i)=>`
+    <div class="file-item ${fileActive(i)?'on':''}" onclick="toggleFile(${i})">
+      <div class="fi-dot" style="background:${f.color};opacity:${fileActive(i)?1:0.25};"></div>
+      <div class="fi-body">
+        <div class="fi-name ${fileActive(i)?'':'dim'}" title="${f.n}">${f.n}</div>
+        <div class="fi-bar-bg"><div class="fi-bar" style="width:${Math.round(f.total/maxTotal*100)}%;background:${f.color};opacity:${fileActive(i)?0.9:0.2};"></div></div>
+      </div>
+      <div class="fi-count" style="color:${fileActive(i)?f.color:'var(--text-muted)'};">
+        ${f.total>=1000?(f.total/1000).toFixed(1)+'k':f.total}
+      </div>
+    </div>
+  `).join('');
+}
+
+function toggleFile(i){
+  if(active.has(i)){if(active.size===1)return;active.delete(i);}
+  else active.add(i);
+  updateAll();
+}
+function allFiles(){FILES.forEach((_,i)=>active.add(i)); updateAll();}
+
+function updateAll(){
+  renderFileList();
+  drawMap();
+  renderDist();
+  renderParties();
+  renderTimeline();
+}
+
+function handleDistClick(i){
+  if(active.has(i) && active.size > 1){
+    // Solo: isolate this file
+    active.clear();
+    active.add(i);
+  } else {
+    // Toggle: activate if inactive, or deactivate if more than 1 active
+    if(active.has(i)){
+      if(active.size > 1) active.delete(i);
+    } else {
+      active.add(i);
+    }
+  }
+  updateAll();
+}
+
+function renderDist(){
+  const el = document.getElementById('distWrap');
+  el.innerHTML = FILES.map((f,i)=>{
+    const waW = Math.round(f.wa/maxTotal*100);
+    const otherW = Math.round((f.total-f.wa)/maxTotal*100);
+    const pct = f.total > 0 ? Math.round(f.wa/f.total*100) : 0;
+    const dim = !fileActive(i);
+    return `<div class="dist-row" style="opacity:${dim?0.35:1}; cursor:pointer;" onclick="handleDistClick(${i})">
+      <div class="dist-lbl" title="${f.n}">${f.n}</div>
+      <div class="dist-track">
+        <div class="dist-seg" style="width:${waW}%;background:${dim?'#9ca3af':f.color};"></div>
+        <div class="dist-seg" style="width:${otherW}%;background:#e5e7eb;"></div>
+      </div>
+      <div class="dist-cnt">${f.total>=1000?(f.total/1000).toFixed(1)+'k':f.total} pkts</div>
+      <div class="dist-pct" style="color:${dim?'#9ca3af':f.color}; font-weight:600;">${pct}% WA · ${f.unclassified || 0} unclassified</div>
+    </div>`;
+  }).join('');
+}
+
+function ipClassBadge(p) {
+  const label = p.ipClassification || 'Server (General)';
+  let style = 'ip-class-server';
+  if (p.ipClassGroup === 'p2p') style = 'ip-class-p2p';
+  if (p.ipClassGroup === 'unclassified') style = 'ip-class-unclassified';
+  if (label === 'Server (Call Relay)' || label === 'Server (VPN Exit)' || label === 'Server (CGNAT)') style = 'ip-class-warning';
+  return `<span class="ip-class-badge ${style}" title="${p.ipClassificationDescription || label}">${label}</span>`;
+}
+
+function renderParties(){
+  const query = partySearch.toLowerCase();
+  const visible = PARTIES.filter(p=>p.files.some(fi=>active.has(fi))).filter(p => {
+    if (partyIpClassFilter !== 'all' && p.ipClassGroup !== partyIpClassFilter) return false;
+    if (partyConfidenceFilter !== 'all' && (p.conf || '').toLowerCase() !== partyConfidenceFilter) return false;
+    if (!query) return true;
+    const fileNames = p.files.map(fi => (FILES[fi] || {}).n || '').join(' ');
+    const searchable = [p.ip, p.role, p.activity, p.country, p.city, p.asn, p.ipClassification, fileNames].join(' ').toLowerCase();
+    return searchable.includes(query);
+  });
+  const count = document.getElementById('party-filter-count');
+  if (count) count.textContent = `${visible.length} of ${PARTIES.length} parties`;
+  if (!visible.length) {
+    document.getElementById('partyBody').innerHTML = '<tr><td colspan="12" class="px-4 py-10 text-center text-sm text-gray-400">No parties match the current filters.</td></tr>';
+    return;
+  }
+  document.getElementById('partyBody').innerHTML = visible.map(p=>{
+    const tags = p.files.filter(fi=>active.has(fi)).map(fi=>`<div class="fdot shadow-sm" style="background:${FILES[fi].color};" title="${FILES[fi].n}"></div>`).join('');
+    const confColor = p.conf==='High'?'text-green-600':p.conf==='Medium'?'text-yellow-600':p.conf==='Unclassified'?'text-slate-600':'text-gray-400';
+    const roleClass = p.role.includes('CDN')?'role-pill role-cdn':'role-pill';
+    const caveatIcon = p.caveat ? `<i class="fa-solid fa-triangle-exclamation text-orange-500" title="${p.caveat_label}"></i>` : '';
+    
+    return `<tr class="hover:bg-gray-50 cursor-pointer ${p.caveat ? 'bg-orange-50' : ''}">
+      <td class="px-4 py-3 text-sm font-semibold text-gray-800">${p.ip}</td>
+      <td class="px-4 py-3"><div class="flex gap-1 flex-wrap w-16">${tags}</div></td>
+      <td class="px-4 py-3"><span class="${p.proto==='UDP'?'proto-udp':'proto-tcp'}">${p.proto}</span></td>
+      <td class="px-4 py-3">${ipClassBadge(p)}</td>
+      <td class="px-4 py-3 text-xs font-bold text-gray-700">${p.pkts.toLocaleString()}</td>
+      <td class="px-4 py-3 text-xs text-gray-600">${p.bytes}</td>
+      <td class="px-4 py-3 text-xs text-gray-600">${p.dur>=3600?Math.round(p.dur/3600)+'h':Math.round(p.dur)+'s'}</td>
+      <td class="px-4 py-3"><span class="${roleClass}">${p.role}</span></td>
+      <td class="px-4 py-3 text-xs text-gray-500 font-mono">${p.activity}</td>
+      <td class="px-4 py-3 text-xs font-semibold ${confColor}">${p.conf === 'Unclassified' ? 'UNCLASSIFIED' : p.conf}</td>
+      <td class="px-4 py-3 text-xs text-gray-600 whitespace-nowrap">${p.country} <span class="text-gray-400">· ${p.asn.split(' ')[0]}</span></td>
+      <td class="px-4 py-3 text-center">${caveatIcon}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderTimeline(){
+  const visible = PARTIES.filter(p=>p.files.some(fi=>active.has(fi)));
+  const maxDur = Math.max(...visible.map(p=>p.dur),1);
+  document.getElementById('timeline').innerHTML = visible.map(p=>{
+    const fi = p.files.find(fi=>active.has(fi));
+    const c = fi!==undefined?FILES[fi].color:'#888';
+    const w = Math.round(p.dur/maxDur*100);
+    return `<div class="flex items-center gap-3">
+      <div class="text-xs font-mono text-gray-600 w-32 text-right truncate" title="${p.ip}">${p.ip}</div>
+      <div class="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+        <div class="h-full rounded-full transition-all" style="width:${w}%;background:${c};"></div>
+      </div>
+      <div class="text-xs text-gray-500 w-12 text-right">${p.dur>=3600?Math.round(p.dur/3600)+'h':Math.round(p.dur)+'s'}</div>
+    </div>`;
+  }).join('');
+}
+
+function showTab(t){
+  document.getElementById('tab-p').className='tab'+(t==='p'?' on':'');
+  document.getElementById('tab-s').className='tab'+(t==='s'?' on':'');
+  document.getElementById('pane-p').style.display=t==='p'?'block':'none';
+  document.getElementById('pane-s').style.display=t==='s'?'block':'none';
+}
+
+function drawMap(){
+  const activeFileNames = Array.from(active).map(i => FILES[i].n);
+  if (typeof window.filterCoreMap === 'function') {
+    window.filterCoreMap(activeFileNames);
+  }
+}
+
+function bindPartyFilters() {
+  const search = document.getElementById('party-search');
+  const ipClass = document.getElementById('party-ip-class-filter');
+  const confidence = document.getElementById('party-confidence-filter');
+  const reset = document.getElementById('party-filter-reset');
+  search.addEventListener('input', event => { partySearch = event.target.value.trim(); renderParties(); });
+  ipClass.addEventListener('change', event => { partyIpClassFilter = event.target.value; renderParties(); });
+  confidence.addEventListener('change', event => { partyConfidenceFilter = event.target.value; renderParties(); });
+  reset.addEventListener('click', () => {
+    partySearch = '';
+    partyIpClassFilter = 'all';
+    partyConfidenceFilter = 'all';
+    search.value = '';
+    ipClass.value = 'all';
+    confidence.value = 'all';
+    renderParties();
+  });
+}
+
+bindPartyFilters();
+updateAll();
+</script>
+
+{% else %}
+<div class="bg-blue-100 border-l-4 border-blue-500 text-blue-800 p-4 rounded-md flex items-center space-x-2">
+  ℹ No analysis data yet. Click <strong>Run Analysis on Case</strong> above to group parties and geolocate.
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

@@ -1,0 +1,185 @@
+{% extends "layout.html" %}
+{% block title %}Register Capture — WA Analytics{% endblock %}
+
+{% block dashboard %}
+
+<!-- Page header -->
+<div class="mb-6">
+  <div class="flex items-center text-xs text-gray-500 mb-1">
+    <span>Pipeline</span>
+    <span class="mx-2">›</span>
+    <span class="text-blue-600 font-semibold">Register Capture</span>
+  </div>
+  <h2 class="text-2xl font-bold text-gray-900">Upload Evidence</h2>
+  <p class="text-gray-500 text-sm mt-1">Register new raw PCAP evidence. Existing evidence is managed in Evidence Storage.</p>
+</div>
+
+<!-- Upload Panel -->
+<div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 max-w-2xl">
+  <div class="text-sm font-semibold text-gray-800 mb-4 flex items-center">
+    <i class="fa-solid fa-folder-open text-blue-500 mr-2"></i> Register New Evidence (Files or Folder)
+  </div>
+
+  <div id="drop-zone" class="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:bg-gray-50 transition-colors group">
+    <div class="text-4xl text-gray-400 group-hover:text-blue-500 mb-3 transition-colors">
+      <i class="fa-solid fa-cloud-arrow-up"></i>
+    </div>
+    <div class="text-base font-semibold text-gray-700">Drag & Drop files or folder here</div>
+    <div class="text-xs text-gray-500 mt-1">Upload individual PCAP captures or an entire folder of captures</div>
+    
+    <div class="mt-4 flex items-center justify-center gap-3">
+      <button type="button" class="bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-blue-400 font-medium py-1.5 px-4 rounded-md text-sm transition-colors shadow-sm flex items-center" id="btn-browse-files">
+        <i class="fa-solid fa-file mr-1.5 text-blue-600"></i> Browse Files
+      </button>
+      <button type="button" class="bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-amber-400 font-medium py-1.5 px-4 rounded-md text-sm transition-colors shadow-sm flex items-center" id="btn-browse-folder">
+        <i class="fa-solid fa-folder-open mr-1.5 text-amber-600"></i> Browse Folder
+      </button>
+    </div>
+    
+    <!-- Hidden file & folder inputs -->
+    <input type="file" id="pcap-file-batch" multiple class="hidden">
+    <input type="file" id="pcap-folder-batch" webkitdirectory directory multiple class="hidden">
+  </div>
+
+  <!-- Toggle and status bar -->
+  <div class="mt-3 flex items-center justify-between px-1">
+    <label class="flex items-center space-x-2 text-xs text-gray-700 cursor-pointer select-none" title="When checked (default), Windows open dialog displays ALL files without filtering out PCAP files lacking Wireshark registration.">
+      <input type="checkbox" id="toggle-all-pcap-files" class="form-checkbox h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500" checked>
+      <span class="font-semibold text-gray-800">ALL pcap files</span>
+      <span class="text-gray-400 text-[11px]">(Show all files without Wireshark filter)</span>
+    </label>
+    <div id="file-count-badge" class="text-xs text-blue-600 font-medium hidden"></div>
+  </div>
+
+  <div id="upload-file-list" class="mt-4 flex flex-col gap-2"></div>
+
+  <div class="flex items-center gap-2 mt-4">
+    <button class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-md transition-colors hidden items-center justify-center shadow-sm" id="btn-upload-batch">
+      <i class="fa-solid fa-filter mr-2"></i> Register, Filter &amp; Inspect
+    </button>
+    <button class="bg-white border border-blue-300 text-blue-700 hover:bg-blue-50 font-medium py-2 px-3 rounded-md text-xs transition-colors hidden items-center" id="btn-register-only">Register only</button>
+    <button type="button" class="bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 px-3 rounded-md text-xs transition-colors hidden items-center" id="btn-clear-files" title="Clear selection">
+      <i class="fa-solid fa-rotate-left mr-1"></i> Clear
+    </button>
+  </div>
+
+  <div id="upload-status" class="mt-3 text-sm hidden"></div>
+</div>
+
+{% if error %}
+<div class="mt-6 bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded-md">
+  <div class="flex">
+    <div class="flex-shrink-0">
+      <i class="fa-solid fa-triangle-exclamation text-yellow-400"></i>
+    </div>
+    <div class="ml-3">
+      <p class="text-sm text-yellow-700">
+        {{ error }}
+      </p>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Active Case Files table -->
+{% if false %}
+<div class="mt-8">
+  <div class="text-lg font-bold text-gray-800 mb-4 flex items-center">
+    <i class="fa-solid fa-file-lines text-blue-500 mr-2"></i> Registered Evidence Files
+  </div>
+  
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden">
+    <div class="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50 flex-wrap gap-4">
+      <div class="flex items-center text-sm text-gray-600 space-x-4">
+        <span><strong class="text-gray-900">{{ uploads | length }}</strong> registered files</span>
+        <button class="text-red-500 hover:text-red-700 font-medium flex items-center transition-colors" onclick="deleteBatch('{{ active_batch_id }}')">
+          <i class="fa-regular fa-trash-can mr-1"></i> Delete Case
+        </button>
+        
+        {% set can_filter = uploads | length > 0 %}
+        {% set unregistered = uploads | selectattr('status', 'equalto', 'registered') | list | length %}
+        {% if can_filter %}
+        <div class="flex items-center space-x-3">
+          <label class="flex items-center space-x-1.5 cursor-pointer text-xs group" title="Analyze all PCAP traffic without applying WhatsApp heuristics">
+            <input type="checkbox" id="skip-whatsapp-filter-1" class="form-checkbox h-3.5 w-3.5 text-blue-600 border-gray-300 rounded transition-colors">
+            <span class="text-gray-600 font-medium group-hover:text-gray-900 transition-colors">Bypass WA Filter</span>
+          </label>
+          <button class="bg-blue-600 hover:bg-blue-700 text-white py-1 px-3 rounded-md text-xs font-medium transition-colors flex items-center shadow-sm" id="btn-batch-filter-case">
+            <i class="fa-solid {% if unregistered > 0 %}fa-play{% else %}fa-rotate-right{% endif %} mr-1.5"></i> {% if unregistered > 0 %}Run Filter Pipeline on Case{% else %}Re-run Filter{% endif %}
+          </button>
+        </div>
+        <span id="batch-filter-status" class="text-xs font-bold text-teal-600 hidden"></span>
+        {% endif %}
+        
+        {% if unregistered == 0 %}
+        <a class="bg-blue-50 text-blue-600 hover:bg-blue-100 py-1 px-3 rounded-md text-xs font-medium transition-colors flex items-center border border-blue-200 ml-2" href="{{ url_for('interface2') }}">
+          View Filtered Results <i class="fa-solid fa-arrow-right ml-1.5"></i>
+        </a>
+        {% endif %}
+      </div>
+      <div class="relative">
+        <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 text-xs"></i>
+        <input type="text" class="text-xs border-gray-200 rounded-md text-gray-600 py-1.5 pl-8 pr-3 focus:ring-blue-500 focus:border-blue-500 w-48" placeholder="Search filename…" id="capture-search" oninput="filterTable(this.value, 'captures-table')">
+      </div>
+    </div>
+    
+    <div class="w-full bg-gray-200 h-1 hidden" id="filter-progress">
+      <div class="bg-blue-600 h-1 transition-all duration-300" style="width:0%;"></div>
+    </div>
+
+    <div class="overflow-x-auto flex-1">
+      <table class="w-full text-left text-xs whitespace-nowrap" id="captures-table">
+        <thead class="text-gray-500 bg-white border-b border-gray-100">
+          <tr>
+            <th class="px-4 py-3 font-medium">Filename</th>
+            <th class="px-4 py-3 font-medium">Format</th>
+            <th class="px-4 py-3 font-medium">SHA-256 Fingerprint</th>
+            <th class="px-4 py-3 font-medium">Size</th>
+            <th class="px-4 py-3 font-medium">Packet Capture Window (IST)</th>
+            <th class="px-4 py-3 font-medium">Evidence</th>
+            <th class="px-4 py-3 font-medium">Status</th>
+            <th class="px-4 py-3 font-medium text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-50 text-gray-700">
+          {% for u in uploads %}
+          <tr class="hover:bg-gray-50">
+            <td class="px-4 py-3 font-mono font-medium text-gray-900">{{ u.filename }}</td>
+            <td class="px-4 py-3">
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium border uppercase
+                {% if (u.file_format or 'pcap') == 'pcap' or (u.file_format or 'pcap') == 'pcapng' %}bg-blue-50 text-blue-700 border-blue-200
+                {% elif (u.file_format or 'pcap') == 'json' %}bg-yellow-50 text-yellow-700 border-yellow-200
+                {% else %}bg-gray-100 text-gray-700 border-gray-200{% endif %}">
+                {{ (u.file_format or 'pcap') }}
+              </span>
+            </td>
+            <td class="px-4 py-3">
+              <span class="font-mono text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded text-[10px]" title="{{ u.sha256_hash }}">{{ u.sha256_hash[:20] }}…</span>
+            </td>
+            <td class="px-4 py-3 font-mono text-gray-500">{{ (u.size_bytes / 1024) | round(1) }} KB</td>
+            <td class="px-4 py-3 text-[10px] text-gray-600">{% if u.capture_start_ts %}{{ ist_format(u.capture_start_ts) }}<br><span class="text-gray-400">to {{ ist_format(u.capture_end_ts) }} · {{ u.capture_packet_count }} packets</span>{% else %}Unavailable for {{ u.file_format | upper }} import{% endif %}</td>
+            <td class="px-4 py-3 text-[10px] space-y-1"> <a class="text-blue-600 hover:underline block" href="{{ url_for('api_download_evidence_library', upload_id=u.upload_id, kind='raw') }}">Raw PCAP</a>{% if u.filtered_path %}<a class="text-teal-600 hover:underline block" href="{{ url_for('api_download_evidence_library', upload_id=u.upload_id, kind='filtered') }}">Filtered PCAP</a>{% elif u.filtered_status %}<span class="text-gray-400">{{ u.filtered_status }}</span>{% endif %}</td>
+            <td class="px-4 py-3">
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase
+                {% if u.status == 'registered' %}bg-amber-100 text-amber-700
+                {% elif u.status == 'filtered' %}bg-teal-100 text-teal-700
+                {% elif u.status == 'analyzed' %}bg-green-100 text-green-700
+                {% else %}bg-gray-100 text-gray-700{% endif %}">
+                {{ u.status }}
+              </span>
+            </td>
+            <td class="px-4 py-3 text-right">
+              <button class="text-gray-400 hover:text-red-500 transition-colors" onclick="deleteUpload('{{ u.upload_id }}')" title="Delete File">
+                <i class="fa-regular fa-trash-can text-sm"></i>
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

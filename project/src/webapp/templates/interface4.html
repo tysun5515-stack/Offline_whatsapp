@@ -1,0 +1,130 @@
+{% extends "layout.html" %}
+{% block title %}Deep Analysis — WA Analytics{% endblock %}
+
+{% block dashboard %}
+<div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+  <div>
+    <nav class="text-sm text-gray-500 mb-1">
+      Pipeline &raquo; <span class="text-indigo-600 font-semibold">Deep Analysis</span>
+    </nav>
+    <h1 class="text-2xl font-bold text-gray-800">Deep Core Analysis (Case Level)</h1>
+    <p class="text-sm text-gray-500">Timeline reconstruction · Session correlation · Forensic JSON export</p>
+  </div>
+  {% if uploads %}
+  <div class="flex gap-2 mt-2 md:mt-0">
+    <button class="inline-flex items-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md" id="btn-run-deep-case" data-batch-id="{{ uploads[0].batch_id }}">
+      ⏱ Extract Timelines
+    </button>
+    <a class="inline-flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-100" href="/api/export/{{ uploads[0].batch_id }}">
+      ⬇ Export JSON Report
+    </a>
+  </div>
+  {% endif %}
+</div>
+
+{% if not uploads %}
+<div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded-md flex items-center space-x-2">
+  ⚠ No case selected. Use the case selector in the sidebar.
+</div>
+{% else %}
+<div class="flex flex-col gap-4">
+  <!-- Action bar -->
+  <div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+    <div class="flex gap-2 items-center">
+      <select id="compare-select" class="border border-gray-300 rounded-md py-1 px-2 text-sm" style="width:200px;">
+        <option value="">— Select Case —</option>
+        {% for b in all_batches %}
+          {% if b.batch_id != uploads[0].batch_id %}
+          <option value="{{ b.batch_id }}">{{ b.batch_id[:8] }} ({{ b.file_count }} files)</option>
+          {% endif %}
+        {% endfor %}
+      </select>
+      <button class="inline-flex items-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md" id="btn-run-compare-case" data-batch-id="{{ uploads[0].batch_id }}">
+        🔗 Compare
+      </button>
+    </div>
+  </div>
+
+  <div id="deep-status" class="hidden text-sm text-gray-600"></div>
+
+  <!-- Correlation result -->
+  <div id="compare-results" class="hidden border-l-4 border-indigo-600 p-4 bg-indigo-50 rounded-md">
+    <div class="text-sm font-bold text-indigo-800 mb-2">🔗 Cross-Case Correlation Result</div>
+    <div class="grid grid-cols-2 gap-2">
+      <span class="font-medium text-gray-600">Match Score</span>
+      <span id="compare-score" class="badge bg-indigo-200 text-indigo-800 px-2 py-1 rounded"></span>
+      <span class="font-medium text-gray-600">Details</span>
+      <pre id="compare-details" class="text-xs text-gray-600"></pre>
+    </div>
+  </div>
+
+  <!-- Sessions -->
+  {% if sessions %}
+  <div class="text-lg font-semibold text-gray-800 mb-2">Reconstructed Session Timeline</div>
+
+  <!-- Stats cards -->
+  <div class="grid grid-cols-4 gap-4">
+    <div class="bg-white rounded-xl shadow-sm border p-4 flex flex-col items-center">
+      <div class="text-2xl font-bold text-gray-800">{{ sessions | length }}</div>
+      <div class="text-sm text-gray-600">Sessions</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border p-4 flex flex-col items-center">
+      <div class="text-2xl font-bold text-gray-800">{{ sessions | selectattr('media_type','eq','text') | list | length }}</div>
+      <div class="text-sm text-gray-600">Text</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border p-4 flex flex-col items-center">
+      <div class="text-2xl font-bold text-gray-800">{{ sessions | selectattr('media_type','eq','audio') | list | length }}</div>
+      <div class="text-sm text-gray-600">Audio</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border p-4 flex flex-col items-center">
+      <div class="text-2xl font-bold text-gray-800">{{ sessions | selectattr('media_type','eq','video') | list | length }}</div>
+      <div class="text-sm text-gray-600">Video</div>
+    </div>
+  </div>
+
+  <!-- Sessions table -->
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">#</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Start Time</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">End Time</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Duration</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Media Type</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Bytes</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Bursts</th>
+          <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Summary</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-200">
+        {% for s in sessions %}
+        <tr class="hover:bg-gray-50">
+          <td class="px-4 py-2 text-xs font-mono text-gray-600">{{ loop.index }}</td>
+          <td class="px-4 py-2 text-xs">{{ '%.2f' % s.start_ts }}s</td>
+          <td class="px-4 py-2 text-xs">{{ '%.2f' % s.end_ts }}s</td>
+          <td class="px-4 py-2 text-xs font-bold">{{ '%.1f' % (s.end_ts - s.start_ts) }}s</td>
+          <td class="px-4 py-2">
+            <span class="px-2 py-1 rounded-full
+              {% if s.media_type == 'audio' %}bg-indigo-100 text-indigo-700
+              {% elif s.media_type == 'video' %}bg-purple-100 text-purple-700
+              {% elif s.media_type == 'image' %}bg-green-100 text-green-700
+              {% else %}bg-gray-100 text-gray-700{% endif %}
+            ">{{ s.media_type|title }}</span>
+          </td>
+          <td class="px-4 py-2 text-xs">{{ s.total_bytes }}</td>
+          <td class="px-4 py-2 text-xs">{{ s.burst_count }}</td>
+          <td class="px-4 py-2 text-xs text-gray-600">{{ s.summary_text }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-800 p-4 rounded-md flex items-center space-x-2">
+    ℹ No sessions built yet. Click <strong>Extract Timelines</strong> above to begin reconstruction.
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

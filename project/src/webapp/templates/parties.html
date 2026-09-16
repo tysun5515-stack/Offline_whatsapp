@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Party Distribution</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <h1>Party Distribution</h1>
+    <p>
+        <a href="{{ url_for('results', file_id=file_id) }}">Back to Results</a> | 
+        <a href="{{ url_for('geomap', file_id=file_id) }}">View Geographical Map</a>
+    </p>
+    
+    <h2>Visual Distribution</h2>
+    <div style="display: flex; gap: 20px; justify-content: space-around; flex-wrap: wrap;">
+        <div>
+            <h3>Bar Chart</h3>
+            <img src="/results/{{ file_id }}/charts/party_bar.png" alt="Party Bar Chart" style="max-width: 100%; height: auto;">
+        </div>
+        <div>
+            <h3>Pie Chart</h3>
+            <img src="/results/{{ file_id }}/charts/party_pie.png" alt="Party Pie Chart" style="max-width: 100%; height: auto;">
+        </div>
+    </div>
+    
+    <h2>Party Details Table</h2>
+    <table border="1">
+        <thead>
+            <tr>
+                <th>Party ID</th>
+                <th>Source IP</th>
+                <th>Destination IP</th>
+                <th>Protocol</th>
+                <th>Packet Count</th>
+                <th>Total Bytes</th>
+                <th>Party Type</th>
+                <th>Caveat</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for party in parties %}
+            <tr>
+                <td>{{ party['party_id'] }}</td>
+                <td>{{ party['src_ip'] }}</td>
+                <td>{{ party['dst_ip'] }}</td>
+                <td>{{ party['protocol'] }}</td>
+                <td>{{ party['packet_count'] }}</td>
+                <td>{{ party['total_bytes'] }}</td>
+                <td>{{ party['party_type'] }}</td>
+                <td style="color: darkorange; font-size: 0.9em;">{{ party['caveat'] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>

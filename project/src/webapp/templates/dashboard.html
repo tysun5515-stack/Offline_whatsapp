@@ -1,0 +1,565 @@
+{% extends "layout.html" %}
+{% block title %}Dashboard — WA Analytics{% endblock %}
+
+{% block dashboard %}
+<!-- Welcome Section -->
+<div>
+  <h2 class="text-2xl font-bold text-gray-900">Welcome, Analyst!</h2>
+  <p class="text-gray-500 text-sm mt-1">Analyze and visualize WhatsApp traffic from PCAP files with ease.</p>
+</div>
+
+{% if not uploads %}
+<!-- ── Smart Empty State ── -->
+<div class="bg-white border border-gray-200 rounded-xl p-10 text-center shadow-sm max-w-3xl mx-auto mt-8">
+  <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-50 text-blue-500 mb-6">
+    <i class="fa-solid fa-satellite-dish text-3xl"></i>
+  </div>
+  <h3 class="text-xl font-bold text-gray-900 mb-2">Awaiting Evidence</h3>
+  <p class="text-gray-500 mb-8 max-w-lg mx-auto">No filtered WhatsApp captures were found for the current scope. To begin analysis, you need to upload PCAP files and run the extraction filter.</p>
+  
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
+    <div class="border border-gray-100 rounded-lg p-5 hover:border-blue-300 hover:shadow-md transition-all group">
+      <div class="flex items-start">
+        <i class="fa-solid fa-cloud-arrow-up text-blue-500 mt-1 mr-3"></i>
+        <div>
+          <h4 class="font-semibold text-gray-800 group-hover:text-blue-600 transition-colors">1. Register New Captures</h4>
+          <p class="text-xs text-gray-500 mt-1 mb-3">Upload raw PCAP or PCAPNG files directly into the platform.</p>
+          <a href="{{ url_for('interface1') }}" class="text-sm font-medium text-blue-600 hover:text-blue-700">Go to Upload Evidence &rarr;</a>
+        </div>
+      </div>
+    </div>
+    
+    <div class="border border-gray-100 rounded-lg p-5 hover:border-indigo-300 hover:shadow-md transition-all group">
+      <div class="flex items-start">
+        <i class="fa-solid fa-filter text-indigo-500 mt-1 mr-3"></i>
+        <div>
+          <h4 class="font-semibold text-gray-800 group-hover:text-indigo-600 transition-colors">2. Run Extraction Filter</h4>
+          <p class="text-xs text-gray-500 mt-1 mb-3">If you already uploaded evidence, go to Storage to run the WA filter.</p>
+          <a href="{{ url_for('evidence_storage', view='raw') }}" class="text-sm font-medium text-indigo-600 hover:text-indigo-700">Go to Evidence Storage &rarr;</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% else %}
+
+<!-- ── Metric Cards ── -->
+<div class="grid grid-cols-1 md:grid-cols-5 gap-4">
+  <!-- WhatsApp Packets -->
+  <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center">
+    <div class="w-12 h-12 rounded-full bg-green-50 flex items-center justify-center text-green-500 text-xl mr-4">
+      <i class="fa-brands fa-whatsapp"></i>    </div>
+    <div>
+      <div class="text-xs text-gray-500 font-medium mb-1">{% if metrics.bypass_mode %}Confirmed WA Packets{% else %}WhatsApp Packets{% endif %}</div>
+      <div class="flex items-end">
+        <span class="text-2xl font-bold text-gray-800 mr-2" id="metric-packets">{{ metrics.whatsapp_count | default(0) }}</span>
+        {% if (metrics.whatsapp_count | default(0)) > 0 %}
+        <span class="bg-green-100 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded-full mb-1">Detected</span>
+        {% else %}
+        <span class="bg-gray-100 text-gray-500 text-[10px] font-bold px-2 py-0.5 rounded-full mb-1">No Data</span>
+        {% endif %}
+        {% if metrics.bypass_mode %}
+        <span class="text-slate-500 text-[10px] font-medium mb-1">+ {{ metrics.unclassified_count | default(0) }} unclassified</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <!-- Total Size -->
+  <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center">
+    <div class="w-12 h-12 rounded-full bg-purple-50 flex items-center justify-center text-purple-500 text-xl mr-4">
+      <i class="fa-solid fa-database"></i>
+    </div>
+    <div>
+      <div class="text-xs text-gray-500 font-medium mb-1">Total Size</div>
+      <div class="text-2xl font-bold text-gray-800">{{ metrics.total_size_kb | default('0') }} <span class="text-sm text-gray-500 font-medium">KB</span></div>
+    </div>
+  </div>
+  <!-- Unique Flows -->
+  <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center">
+    <div class="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center text-blue-500 text-xl mr-4">
+      <i class="fa-solid fa-share-nodes"></i>
+    </div>
+    <div>
+      <div class="text-xs text-gray-500 font-medium mb-1">Unique Flows</div>
+      <div class="text-2xl font-bold text-gray-800">{{ metrics.flow_count | default(0) }}</div>
+    </div>
+  </div>
+  <!-- Endpoints -->
+  <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center">
+    <div class="w-12 h-12 rounded-full bg-teal-50 flex items-center justify-center text-teal-500 text-xl mr-4">
+      <i class="fa-solid fa-network-wired"></i>
+    </div>
+    <div>
+      <div class="text-xs text-gray-500 font-medium mb-1">Endpoints</div>
+      <div class="text-2xl font-bold text-gray-800">{{ metrics.endpoint_count | default(0) }}</div>
+    </div>
+  </div>
+  <!-- Detection Rate -->
+  <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col justify-center">
+    <div class="text-xs text-gray-500 font-medium mb-1">Confidence Rate</div>
+    <div class="flex items-center justify-between mb-1">
+      <div class="text-2xl font-bold text-gray-800 leading-none">{{ metrics.detection_rate | default(0) }}%</div>
+      <span class="text-[10px] text-green-600 font-semibold bg-green-50 px-1.5 py-0.5 rounded">Target > 90%</span>
+    </div>
+    <div class="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+      <div class="bg-green-500 h-1.5 rounded-full transition-all duration-700" style="width: {{ metrics.detection_rate | default(0) }}%"></div>
+    </div>
+  </div>
+</div>
+
+<!-- â”€â”€ Charts Row 1 â”€â”€ -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <!-- Line Chart: Traffic Over Time -->
+  <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-100 flex flex-col">
+    <div class="flex justify-between items-center mb-4">
+      <div class="flex items-center font-semibold text-gray-800">
+        <i class="fa-solid fa-chart-line text-blue-500 mr-2"></i> WhatsApp Traffic Over Time
+      </div>
+      <span class="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded">Packets per Second</span>
+    </div>
+    <div class="flex-1 relative min-h-[250px]">
+      {% if traffic_timeline %}
+      <canvas id="trafficLineChart"></canvas>
+      {% else %}
+      <div class="absolute inset-0 flex flex-col items-center justify-center text-gray-400">
+        <i class="fa-solid fa-chart-line text-3xl mb-2 opacity-30"></i>
+        <p class="text-sm">Run the filter pipeline to generate timeline data.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Communication Map -->
+  <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-100 flex flex-col relative overflow-hidden">
+    <div class="flex justify-between items-center mb-4 z-10 relative">
+      <div class="flex items-center font-semibold text-gray-800">
+        <i class="fa-solid fa-map-location-dot text-blue-500 mr-2"></i> Communication Map
+      </div>
+    </div>
+    <div class="flex-1 relative min-h-[250px] bg-white rounded-lg overflow-hidden border border-gray-100">
+      {% if map_html %}
+      {{ map_html | safe }}
+      <!-- Top Countries Legend -->
+      <div class="absolute right-3 top-3 bg-white/90 backdrop-blur-sm p-3 rounded-lg shadow-sm border border-gray-100 z-10 text-xs w-44 pointer-events-none">
+        <div class="font-bold text-gray-800 mb-2">Top Countries</div>
+        <div class="space-y-1.5">
+          {% for c in top_countries %}
+          <div class="flex justify-between items-center">
+            <span class="text-gray-700">{{ c.country }}</span>
+            <span class="text-gray-500 font-medium">{{ c.pct }}%</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% else %}
+      <div class="absolute inset-0 flex flex-col items-center justify-center text-gray-400 bg-[#f0f4ff]">
+        <i class="fa-solid fa-map-location-dot text-3xl mb-2 opacity-30"></i>
+        <p class="text-sm">Run Core Analysis to populate the geo map.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- â”€â”€ Charts Row 2 â”€â”€ -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+  <!-- Traffic Classification Donut -->
+  <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+    <div class="flex items-center font-semibold text-gray-800 mb-4 text-sm">
+      <i class="fa-solid fa-chart-pie text-blue-500 mr-2"></i> Traffic Classification
+    </div>
+    {% if media_dist %}
+    <div class="flex items-center">
+      <div class="w-1/2 relative h-32 flex justify-center items-center">
+        <canvas id="classificationChart"></canvas>
+        <div class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
+          <span class="text-xl font-bold text-gray-800 leading-tight">{{ metrics.whatsapp_count | default(0) }}</span>
+          <span class="text-[10px] text-gray-500">Total</span>
+        </div>
+      </div>
+      <div class="w-1/2 pl-4 text-xs space-y-2">
+        {% set palette = {'Chat': 'bg-green-500', 'Media': 'bg-blue-500', 'VoIP': 'bg-purple-500', 'Other': 'bg-gray-300'} %}
+        {% set total_wa = (metrics.whatsapp_count | default(0)) or 1 %}
+        {% for label, count in media_dist.items() %}
+        <div class="flex items-center justify-between">
+          <div class="flex items-center">
+            <span class="w-2 h-2 rounded-full {{ palette.get(label, 'bg-orange-400') }} mr-2"></span>
+            {{ label }}
+          </div>
+          <div class="text-gray-500 text-[10px]">{{ count }} ({{ (count / total_wa * 100) | round(1) }}%)</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <div class="flex items-center justify-center h-32 text-gray-400 text-xs text-center">
+      No classification data yet.<br>Run Filter Pipeline.
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Protocol Distribution Donut -->
+  <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+    <div class="flex items-center font-semibold text-gray-800 mb-4 text-sm">
+      <i class="fa-solid fa-shield-halved text-blue-500 mr-2"></i> Protocol Distribution
+    </div>
+    {% if protocol_dist %}
+    <div class="flex items-center">
+      <div class="w-1/2 relative h-32 flex justify-center items-center">
+        <canvas id="protocolChart"></canvas>
+        <div class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
+          <span class="text-xl font-bold text-gray-800 leading-tight">{{ metrics.whatsapp_count | default(0) }}</span>
+          <span class="text-[10px] text-gray-500">Total</span>
+        </div>
+      </div>
+      <div class="w-1/2 pl-4 text-xs space-y-2">
+        {% set proto_palette = {'TCP': 'bg-blue-500', 'UDP': 'bg-purple-500', 'DNS': 'bg-cyan-400', 'Other': 'bg-gray-300'} %}
+        {% set total_wa = (metrics.whatsapp_count | default(0)) or 1 %}
+        {% for proto, count in protocol_dist.items() %}
+        <div class="flex items-center justify-between">
+          <div class="flex items-center">
+            <span class="w-2 h-2 rounded-full {{ proto_palette.get(proto, 'bg-orange-400') }} mr-2"></span>
+            {{ proto }}
+          </div>
+          <div class="text-gray-500 text-[10px]">{{ (count / total_wa * 100) | round(1) }}%</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <div class="flex items-center justify-center h-32 text-gray-400 text-xs text-center">
+      No protocol data yet.<br>Run Filter Pipeline.
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Flow Reconstruction -->
+  <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col">
+    <div class="flex items-center font-semibold text-gray-800 mb-4 text-sm">
+      <i class="fa-solid fa-network-wired text-blue-500 mr-2"></i> Flow Reconstruction
+    </div>
+    {% if top_party %}
+    <div class="flex-1 flex flex-col justify-center items-center px-2">
+      <!-- Devices row -->
+      <div class="flex items-center justify-between w-full mb-4 relative">
+        <!-- Local -->
+        <div class="flex flex-col items-center z-10 bg-white px-1">
+          <div class="w-10 h-10 rounded-full bg-green-50 text-green-600 flex items-center justify-center mb-1 border border-green-100 shadow-sm">
+            <i class="fa-solid fa-laptop text-lg"></i>
+          </div>
+          <div class="text-[10px] font-bold text-gray-800 text-center leading-tight">
+            {{ (top_party.local_ips or '').split(',')[0].strip() or 'Local' }}
+          </div>
+          <div class="text-[9px] text-gray-500">Local Device</div>
+        </div>
+        <!-- Line with WA icon -->
+        <div class="flex-1 flex flex-col items-center relative -mx-1 z-0">
+          <div class="w-full border-t border-dashed border-green-400 relative">
+            <i class="fa-solid fa-chevron-right absolute right-0 top-1/2 transform -translate-y-1/2 text-[8px] text-green-500"></i>
+          </div>
+          <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white px-1">
+            <i class="fa-brands fa-whatsapp text-green-500 text-xl bg-green-50 rounded-full p-1 border border-green-100"></i>
+          </div>
+        </div>
+        <!-- Remote -->
+        <div class="flex flex-col items-center z-10 bg-white px-1">
+          <div class="w-10 h-10 rounded-full bg-purple-50 text-purple-600 flex items-center justify-center mb-1 border border-purple-100 shadow-sm">
+            <i class="fa-solid fa-server text-lg"></i>
+          </div>
+          <div class="text-[10px] font-bold text-gray-800 text-center leading-tight">{{ top_party.remote_ip }}</div>
+          <div class="text-[9px] text-gray-500">{{ top_party.geo_country or 'Remote' }}</div>
+        </div>
+      </div>
+      <!-- Stats bar -->
+      <div class="w-full grid grid-cols-5 gap-0 text-center divide-x divide-gray-100 bg-gray-50 rounded py-1.5 border border-gray-100">
+        <div>
+          <div class="text-[9px] text-gray-500">Protocol</div>
+          <div class="text-[10px] font-bold text-gray-700">{{ top_party.protocol }}</div>
+        </div>
+        <div>
+          <div class="text-[9px] text-gray-500">Packets</div>
+          <div class="text-[10px] font-bold text-gray-700">{{ top_party.packet_count }}</div>
+        </div>
+        <div>
+          <div class="text-[9px] text-gray-500">Bytes</div>
+          <div class="text-[10px] font-bold text-gray-700">{{ (top_party.total_bytes / 1024) | round(1) }} KB</div>
+        </div>
+        <div>
+          <div class="text-[9px] text-gray-500" title="Dominant activity aggregated across all packets in this flow">Type</div>
+          <div class="text-[10px] font-bold text-gray-700 truncate px-0.5" title="Dominant activity: {{ top_party.sub_activity or top_party.party_type or 'â€”' }}{% if top_party.media_breakdown %} ({{ top_party.media_breakdown }}){% endif %}">{{ top_party.sub_activity or top_party.party_type or 'â€”' }}</div>
+        </div>
+        <div>
+          <div class="text-[9px] text-gray-500">Confidence</div>
+          <div class="text-[10px] font-bold {% if top_party.confidence == 'high' %}text-green-600{% elif top_party.confidence == 'medium' %}text-orange-500{% else %}text-gray-600{% endif %}">
+            {{ (top_party.confidence or 'â€”') | upper }}
+          </div>
+        </div>
+      </div>
+      {% if top_party.media_breakdown %}
+      <div class="w-full mt-2 bg-blue-50/70 border border-blue-100 rounded px-2 py-1 flex items-center justify-between text-[10px] text-gray-600" title="Entity aggregation: Dominant flow type shown above. Packet breakdown across all {{ top_party.packet_count }} packets in flow: {{ top_party.media_breakdown }}">
+        <span class="flex items-center text-blue-700 font-medium">
+          <i class="fa-solid fa-chart-pie mr-1 text-blue-500"></i> Flow Packets:
+        </span>
+        <span class="font-mono text-gray-800 font-semibold">{{ top_party.media_breakdown }}</span>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="flex-1 flex items-center justify-center text-gray-400 text-xs text-center">
+      No flow data yet.<br>Run Core Analysis to see reconstruction.
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Key Insights -->
+  <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+    <div class="flex items-center font-semibold text-gray-800 mb-4 text-sm">
+      <i class="fa-solid fa-lightbulb text-green-500 mr-2"></i> Key Insights
+    </div>
+    {% if insights %}
+    <ul class="space-y-3 text-xs text-gray-600">
+      {% for insight in insights %}
+      <li class="flex items-start">
+        <i class="fa-solid fa-circle-check text-green-500 mt-0.5 mr-2 shrink-0"></i>
+        <span>{{ insight }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="flex flex-col items-center justify-center h-28 text-gray-400 text-xs text-center">
+      <i class="fa-solid fa-lightbulb text-2xl mb-2 opacity-30"></i>
+      Insights will appear after running analysis.
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- â”€â”€ Bottom Section â”€â”€ -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  <!-- Recent Parties Table -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 lg:col-span-2 flex flex-col overflow-hidden">
+    <div class="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+      <div class="flex items-center font-semibold text-gray-800 text-sm">
+        <i class="fa-brands fa-whatsapp text-green-500 mr-2"></i> Recent WhatsApp Conversations
+      </div>
+      {% if uploads %}
+      <a class="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center" href="{{ url_for('interface3', capture_from=capture_from, capture_to=capture_to) }}">
+        View All <i class="fa-solid fa-arrow-right ml-1"></i>
+      </a>
+      {% endif %}
+    </div>
+    <div class="overflow-x-auto flex-1">
+      {% if recent_parties %}
+      <table class="w-full text-left text-xs whitespace-nowrap">
+        <thead class="text-gray-500 bg-white border-b border-gray-100">
+          <tr>
+            <th class="px-4 py-3 font-medium">#</th>
+            <th class="px-4 py-3 font-medium">Client IP</th>
+            <th class="px-4 py-3 font-medium">Server / Peer IP</th>
+            <th class="px-4 py-3 font-medium">Type</th>
+            <th class="px-4 py-3 font-medium">Packets</th>
+            <th class="px-4 py-3 font-medium">Bytes</th>
+            <th class="px-4 py-3 font-medium">Duration</th>
+            <th class="px-4 py-3 font-medium">Country</th>
+            <th class="px-4 py-3 font-medium">ASN</th>
+            <th class="px-4 py-3 font-medium">Confidence</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-50 text-gray-700">
+          {% for p in recent_parties %}
+          <tr class="hover:bg-gray-50">
+            <td class="px-4 py-2">{{ loop.index }}</td>
+            <td class="px-4 py-2 font-mono text-gray-600">{{ (p.local_ips or '').split(',')[0].strip() or 'â€”' }}</td>
+            <td class="px-4 py-2 font-mono font-medium text-gray-900">{{ p.remote_ip }}</td>
+            <td class="px-4 py-2">
+              {% set sub = (p.sub_activity or p.party_type or 'other').lower() %}
+              {% if 'voip' in sub or 'call' in sub or 'audio' in sub %}
+              <span class="bg-green-100 text-green-700 px-2 py-0.5 rounded text-[10px] font-medium border border-green-200">VoIP</span>
+              {% elif 'video' in sub or 'media' in sub %}
+              <span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-[10px] font-medium border border-blue-200">Media</span>
+              {% elif 'chat' in sub or 'signal' in sub or 'text' in sub %}
+              <span class="bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-[10px] font-medium border border-purple-200">Chat</span>
+              {% else %}
+              <span class="bg-gray-100 text-gray-600 px-2 py-0.5 rounded text-[10px] font-medium border border-gray-200">{{ p.sub_activity or p.party_type or 'Other' }}</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-2">{{ p.packet_count }}</td>
+            <td class="px-4 py-2">{{ (p.total_bytes / 1024) | round(1) }} KB</td>
+            <td class="px-4 py-2">{{ '%.1f' % (p.duration_s or 0) }}s</td>
+            <td class="px-4 py-2">{{ p.geo_country or 'â€”' }}</td>
+            <td class="px-4 py-2 text-gray-500">{{ p.asn or 'â€”' }}</td>
+            <td class="px-4 py-2">
+              {% if p.confidence == 'high' %}
+              <span class="text-green-600 font-bold text-[10px]">HIGH</span>
+              {% elif p.confidence == 'medium' %}
+              <span class="text-orange-500 font-bold text-[10px]">MEDIUM</span>
+              {% elif p.confidence %}
+              <span class="text-red-500 font-bold text-[10px]">{{ p.confidence | upper }}</span>
+              {% else %}
+              <span class="text-gray-400 text-[10px]">â€”</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="flex flex-col items-center justify-center py-12 text-gray-400">
+        <i class="fa-brands fa-whatsapp text-4xl mb-3 opacity-20"></i>
+        <p class="text-sm">No conversations yet. Run Filter & Analyze to see results.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Activity Feed -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col">
+    <div class="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+      <div class="flex items-center font-semibold text-gray-800 text-sm">
+        <i class="fa-solid fa-clock-rotate-left text-blue-500 mr-2"></i> Recent Activity
+      </div>
+    </div>
+    <div class="p-4 flex-1">
+      {% if recent_events %}
+      <div class="relative border-l border-gray-200 ml-3 space-y-5 pb-2">
+        {% for event in recent_events %}
+        <div class="relative pl-6">
+          <span class="absolute -left-3.5 top-1
+            {% if event.color == 'green' %}bg-green-100 text-green-600
+            {% elif event.color == 'teal' %}bg-teal-100 text-teal-600
+            {% elif event.color == 'blue' %}bg-blue-100 text-blue-600
+            {% else %}bg-gray-100 text-gray-600{% endif %}
+            w-7 h-7 rounded-full flex items-center justify-center border-4 border-white shadow-sm text-xs">
+            <i class="fa-solid {{ event.icon }}"></i>
+          </span>
+          <div class="flex justify-between items-start">
+            <div>
+              <p class="text-xs font-semibold text-gray-800">{{ event.title }}</p>
+              <p class="text-[10px] text-gray-500 mt-0.5">{{ event.subtitle }}</p>
+            </div>
+            <span class="text-[10px] text-gray-400 shrink-0 ml-2">{{ event.time }}</span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="flex flex-col items-center justify-center h-full py-8 text-gray-400">
+        <i class="fa-solid fa-clock-rotate-left text-3xl mb-2 opacity-20"></i>
+        <p class="text-sm text-center">No activity yet for this case.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% endif %}
+<!-- END: No-case / has-case block -->
+{% endblock %}
+
+{% block extra_scripts %}
+<script data-purpose="chart-initialization">
+document.addEventListener("DOMContentLoaded", function () {
+
+  // â”€â”€ 1. Line Chart: Traffic Over Time (dynamic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const ctxLine = document.getElementById('trafficLineChart');
+  if (ctxLine) {
+    const timelineData = {{ traffic_timeline | tojson }};
+    const labels = timelineData.map(d => d.label);
+    const counts = timelineData.map(d => d.count);
+
+    const ctx2d = ctxLine.getContext('2d');
+    let gradientFill = ctx2d.createLinearGradient(0, 0, 0, 300);
+    gradientFill.addColorStop(0, "rgba(34, 197, 94, 0.2)");
+    gradientFill.addColorStop(1, "rgba(34, 197, 94, 0)");
+
+    new Chart(ctxLine, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'WhatsApp Traffic',
+          data: counts,
+          borderColor: '#22c55e',
+          backgroundColor: gradientFill,
+          borderWidth: 2,
+          pointBackgroundColor: '#ffffff',
+          pointBorderColor: '#22c55e',
+          pointBorderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            display: true,
+            position: 'bottom',
+            labels: { usePointStyle: true, boxWidth: 8, boxHeight: 8, font: { size: 12, family: "'Inter', sans-serif" }, color: '#4b5563' }
+          },
+          tooltip: { enabled: true }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 10 }, color: '#9ca3af', maxTicksLimit: 10 } },
+          y: { min: 0, ticks: { font: { size: 10 }, color: '#9ca3af' }, grid: { color: '#f3f4f6' } }
+        }
+      }
+    });
+  }
+
+  // â”€â”€ 2. Doughnut: Traffic Classification (dynamic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const ctxClass = document.getElementById('classificationChart');
+  if (ctxClass) {
+    const mediaData = {{ media_dist | tojson }};
+    const mediaLabels = Object.keys(mediaData);
+    const mediaValues = Object.values(mediaData);
+    const colorMap = {'Chat': '#22c55e', 'Media': '#3b82f6', 'VoIP': '#a855f7', 'Other': '#d1d5db'};
+    const mediaColors = mediaLabels.map(l => colorMap[l] || '#fb923c');
+
+    new Chart(ctxClass, {
+      type: 'doughnut',
+      data: {
+        labels: mediaLabels,
+        datasets: [{ data: mediaValues, backgroundColor: mediaColors, borderWidth: 0, cutout: '75%' }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { enabled: true } }
+      }
+    });
+  }
+
+  // â”€â”€ 3. Doughnut: Protocol Distribution (dynamic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const ctxProto = document.getElementById('protocolChart');
+  if (ctxProto) {
+    const protoData = {{ protocol_dist | tojson }};
+    const protoLabels = Object.keys(protoData);
+    const protoValues = Object.values(protoData);
+    const pColorMap = {'TCP': '#3b82f6', 'UDP': '#a855f7', 'DNS': '#22d3ee', 'Other': '#d1d5db'};
+    const protoColors = protoLabels.map(l => pColorMap[l] || '#fb923c');
+
+    new Chart(ctxProto, {
+      type: 'doughnut',
+      data: {
+        labels: protoLabels,
+        datasets: [{ data: protoValues, backgroundColor: protoColors, borderWidth: 0, cutout: '75%' }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { enabled: true } }
+      }
+    });
+  }
+
+
+
+});
+</script>
+{% endblock %}
+

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Geographical Map - WhatsApp Traffic</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .map-container {
+            width: 100%;
+            height: 80vh;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Geographical Map - WhatsApp Traffic</h1>
+    <p>
+        <a href="{{ url_for('results', file_id=file_id) }}">Back to Results</a> | 
+        <a href="{{ url_for('parties', file_id=file_id) }}">Back to Party Distribution</a>
+    </p>
+    
+    <div class="map-container">
+        {{ map_html | safe }}
+    </div>
+</body>
+</html>
