@@ -302,6 +302,20 @@ def create_app():
                 country_bytes = defaultdict(int)
                 for party in parties[:10]:
                     geo = get_geo(party['remote_ip'])
+                    if not geo:
+                        from src.geolocation import geolocate
+                        geo_new = geolocate(party['remote_ip'])
+                        if geo_new:
+                            upsert_geo(party['remote_ip'], {
+                                'country': geo_new.country,
+                                'city': geo_new.city,
+                                'latitude': geo_new.latitude,
+                                'longitude': geo_new.longitude,
+                                'asn': geo_new.asn,
+                                'asn_org': geo_new.asn_org,
+                                'rdns_hostname': '__RDNS_NONE__'
+                            })
+                            geo = get_geo(party['remote_ip'])
                     row = dict(party)
                     # Bug 5 fix: classify the remote party so caveats show up accurately in dashboard
                     classification = classify_remote_party(
@@ -511,6 +525,21 @@ def create_app():
             parties_data = group_into_entities(packets, 'evidence-scope', 'unknown')
             for p in parties_data:
                 geo = get_geo(p['remote_ip'])
+                if not geo:
+                    from src.geolocation import geolocate
+                    geo_new = geolocate(p['remote_ip'])
+                    if geo_new:
+                        upsert_geo(p['remote_ip'], {
+                            'country': geo_new.country,
+                            'city': geo_new.city,
+                            'latitude': geo_new.latitude,
+                            'longitude': geo_new.longitude,
+                            'asn': geo_new.asn,
+                            'asn_org': geo_new.asn_org,
+                            'rdns_hostname': '__RDNS_NONE__'
+                        })
+                        geo = get_geo(p['remote_ip'])
+
                 if geo:
                     p['remote_lat'] = geo.get('latitude')
                     p['remote_lon'] = geo.get('longitude')
@@ -658,24 +687,104 @@ def create_app():
             nodes_dict = {}
             arcs_list = []
 
-            base_src_x, base_src_y = 520.0, 185.0
+            # ── Per-file source device geo-positioning ─────────────────────────
+            # Identify the capturing device IP per file using port heuristics.
+            # WhatsApp always uses well-known server ports on the server side;
+            # the opposite endpoint is the capture device (client).
+            import ipaddress as _ipaddress
+            _WA_SERVER_PORTS = {443, 80, 5222, 5223, 5228, 4244, 5242, 3478}
+
+            # Walk raw packets to find client IP per filename
+            _file_client_ip = {}   # fname -> best client IP string
+            _file_client_cnt = {}  # fname -> vote count for that IP
+            for _pkt in packets:
+                _fn = _pkt.get('filename')
+                if not _fn:
+                    continue
+                _sp = _pkt.get('src_port') or 0
+                _dp = _pkt.get('dst_port') or 0
+                _sip = _pkt.get('src_ip', '')
+                _dip = _pkt.get('dst_ip', '')
+                # Determine client side from port direction
+                if _sp in _WA_SERVER_PORTS and _dp not in _WA_SERVER_PORTS:
+                    _cip = _dip  # dst is client
+                elif _dp in _WA_SERVER_PORTS and _sp not in _WA_SERVER_PORTS:
+                    _cip = _sip  # src is client
+                else:
+                    _cip = _sip  # fallback
+                if not _cip:
+                    continue
+                _prev_cnt = _file_client_cnt.get(_fn, 0)
+                _new_vote = _file_client_cnt.get(_fn + '|' + _cip, 0) + 1
+                _file_client_cnt[_fn + '|' + _cip] = _new_vote
+                if _new_vote > _prev_cnt:
+                    _file_client_cnt[_fn] = _new_vote
+                    _file_client_ip[_fn] = _cip
+
+            # Now compute SVG (x, y) position for each file's source device
+            # SVG space: width=1000, height=500 (Mercator-ish equirectangular)
+            _SVG_W, _SVG_H = 1000.0, 500.0
+            _DEFAULT_SRC_X, _DEFAULT_SRC_Y = 520.0, 185.0  # private/NAT anchor
+
+            # Group files by resolved location so we can jitter stacked nodes
+            _pos_groups = {}  # (round_x, round_y) -> [fnames]
+
             per_file_source_positions = {}
             file_names = list(file_name_to_idx.keys())
             n_files = len(file_names)
-            for j, fname in enumerate(file_names):
-                angle = (2 * math.pi * j) / max(n_files, 1)
-                jitter_r = 14 if n_files > 1 else 0
-                sx = base_src_x + jitter_r * math.cos(angle)
-                sy = base_src_y + jitter_r * math.sin(angle)
+
+            for fname in file_names:
+                client_ip = _file_client_ip.get(fname)
+                sx, sy = _DEFAULT_SRC_X, _DEFAULT_SRC_Y
+                if client_ip:
+                    try:
+                        _iobj = _ipaddress.ip_address(client_ip)
+                        if not _iobj.is_private and not _iobj.is_loopback:
+                            _cgeo = get_geo(client_ip)
+                            if not _cgeo:
+                                try:
+                                    from src.geolocation import geolocate
+                                    _gnew = geolocate(client_ip)
+                                    if _gnew:
+                                        upsert_geo(client_ip, {
+                                            'country': _gnew.country,
+                                            'city': _gnew.city,
+                                            'latitude': _gnew.latitude,
+                                            'longitude': _gnew.longitude,
+                                            'asn': _gnew.asn,
+                                            'asn_org': _gnew.asn_org,
+                                            'rdns_hostname': '__RDNS_NONE__'
+                                        })
+                                        _cgeo = get_geo(client_ip)
+                                except Exception:
+                                    pass
+                            if _cgeo and _cgeo.get('latitude') and _cgeo.get('longitude'):
+                                _lat = _cgeo['latitude']
+                                _lon = _cgeo['longitude']
+                                sx = (_lon + 180.0) / 360.0 * _SVG_W
+                                sy = (90.0 - _lat) / 180.0 * _SVG_H
+                    except Exception:
+                        pass
+
+                # Jitter if multiple files resolve to the exact same spot
+                _rk = (round(sx / 8) * 8, round(sy / 8) * 8)
+                _grp = _pos_groups.setdefault(_rk, [])
+                _gi = len(_grp)
+                if _gi > 0:
+                    _angle = (2 * math.pi * _gi) / max(n_files, 1)
+                    sx += 14 * math.cos(_angle)
+                    sy += 14 * math.sin(_angle)
+                _grp.append(fname)
+
                 per_file_source_positions[fname] = (sx, sy)
-                
+
                 fidx = file_name_to_idx[fname]
                 nodes_dict[f'src_{fidx}'] = {
-                    'id': f'src_{fidx}', 
-                    'lbl': f'{fname}\n(Device)', 
-                    'x': sx / 1000.0, 
-                    'y': sy / 500.0, 
-                    'c': files_data[fidx]['color'], 
+                    'id': f'src_{fidx}',
+                    'lbl': f'{fname}\n(Device)',
+                    'x': sx / _SVG_W,
+                    'y': sy / _SVG_H,
+                    'c': files_data[fidx]['color'],
                     'r': 5
                 }
 
@@ -763,11 +872,12 @@ def create_app():
             
             file_color_map = {f['n']: f['color'] for f in files_data}
             map_html = generate_map_html(
-                parties_data, 
-                height=360, 
-                file_color_map=file_color_map, 
-                div_id='coreMap', 
-                per_file_source_positions=per_file_source_positions
+                parties_data,
+                height=360,
+                file_color_map=file_color_map,
+                div_id='coreMap',
+                per_file_source_positions=per_file_source_positions,
+                per_file_source_ips=_file_client_ip
             )
             
         all_batches = list_batches()

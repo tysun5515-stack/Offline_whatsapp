@@ -26,7 +26,7 @@ def lon_lat_to_xy(lon: float, lat: float, width: float = 1000.0, height: float =
     y = (90.0 - lat) * (height / 180.0)
     return round(x, 1), round(y, 1)
 
-def generate_map_html(parties_data: List[Dict[str, Any]], height: int = 360, file_color_map: Dict[str, str] = None, div_id: str = None, per_file_source_positions: Dict[str, tuple] = None) -> str:
+def generate_map_html(parties_data: List[Dict[str, Any]], height: int = 360, file_color_map: Dict[str, str] = None, div_id: str = None, per_file_source_positions: Dict[str, tuple] = None, per_file_source_ips: Dict[str, str] = None) -> str:
     """
     Generates a 100% offline, self-contained interactive SVG world map.
     Plots communicating parties, connections from the Source Device,
@@ -244,41 +244,71 @@ def generate_map_html(parties_data: List[Dict[str, Any]], height: int = 360, fil
             f'</g>'
         )
 
-    # Add the Source Device node (clearly styled radar marker)
-    src_caveat_text = (
-        "Source captured on private/NAT network — geographic origin not determinable from packet headers."
-        if source_is_private else ""
-    )
-    
+    # Add the Source Device nodes per file (geo-positioned or NAT anchor)
     source_node_parts = []
-    
+
     if per_file_source_positions and file_color_map:
-        # Multi-file source rendering
+        # Build per-file meta from parties: file -> (ip, country, city)
+        _file_src_meta = {}  # fname -> (ip, country, city, is_private)
+        _DEFAULT_ANCHOR = (520.0, 185.0)
+
         for fname, (sx, sy) in per_file_source_positions.items():
             fcolor = file_color_map.get(fname, '#0EA5E9')
             file_safe = html.escape(str(fname)).replace(" ", "_").replace(".", "_")
+
+            # Determine if this file is at the private/NAT anchor position
+            _dx = abs(sx - _DEFAULT_ANCHOR[0])
+            _dy = abs(sy - _DEFAULT_ANCHOR[1])
+            _at_default = (_dx < 20 and _dy < 20)
+
+            if _at_default:
+                _tip_ip = (per_file_source_ips or {}).get(fname, source_ip) or source_ip
+                _tip_country = "Private / NAT Network"
+                _tip_city = "Geographic origin unknown"
+                _tip_caveat = "Source captured on private/NAT network \u2014 geographic origin not determinable from packet headers."
+            else:
+                _tip_ip = (per_file_source_ips or {}).get(fname, source_ip) or source_ip
+                _tip_country = source_country
+                _tip_city = source_city
+                _tip_caveat = ""
+
             source_node_parts.append(
                 f'<g class="map-source-device map-file-{file_safe} cursor-pointer" '
-                f'data-ip="{html.escape(source_ip)}" '
+                f'data-ip="{html.escape(_tip_ip)}" '
                 f'data-role="Source Device" '
-                f'data-country="{html.escape(source_country)}" '
-                f'data-city="{html.escape(source_city)}" '
+                f'data-country="{html.escape(_tip_country)}" '
+                f'data-city="{html.escape(_tip_city)}" '
                 f'data-asn="Local Host / Capture Point" '
                 f'data-pkts="Source" '
                 f'data-proto="Local" '
                 f'data-files="{html.escape(str([fname]))}" '
-                f'data-caveat="{html.escape(src_caveat_text)}">'
-                f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="8" fill="{fcolor}" opacity="0.25"/>'
-                f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="5" fill="{fcolor}" stroke="#ffffff" stroke-width="1.2"/>'
-                f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="1.5" fill="#ffffff"/>'
+                f'data-caveat="{html.escape(_tip_caveat)}">'
+                f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="9" fill="{fcolor}" opacity="0.2"/>'
+                f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="5.5" fill="{fcolor}" stroke="#ffffff" stroke-width="1.5"/>'
+                f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="2" fill="#ffffff"/>'
                 f'</g>'
             )
-        # Add label in the center
-        source_node_parts.append(
-            f'<text x="{src_x:.1f}" y="{src_y - 20:.1f}" text-anchor="middle" font-size="10" font-weight="700" fill="#0369A1" '
-            f'filter="drop-shadow(0px 1px 2px rgba(255,255,255,0.9))">Source Devices</text>'
-        )
+
+        # Draw group labels once per unique location cluster
+        _seen_labels = set()
+        for fname, (sx, sy) in per_file_source_positions.items():
+            _rk = (round(sx / 20) * 20, round(sy / 20) * 20)  # cluster key
+            if _rk in _seen_labels:
+                continue
+            _seen_labels.add(_rk)
+            _dx = abs(sx - _DEFAULT_ANCHOR[0])
+            _dy = abs(sy - _DEFAULT_ANCHOR[1])
+            _at_default = (_dx < 25 and _dy < 25)
+            _label = "Private / NAT Devices" if _at_default else "Source Device"
+            source_node_parts.append(
+                f'<text x="{sx:.1f}" y="{sy - 13:.1f}" text-anchor="middle" font-size="9" font-weight="700" fill="#0369A1" '
+                f'filter="drop-shadow(0px 1px 2px rgba(255,255,255,0.95))">{_label}</text>'
+            )
     else:
+        src_caveat_text = (
+            "Source captured on private/NAT network \u2014 geographic origin not determinable from packet headers."
+            if source_is_private else ""
+        )
         source_node_parts.append(
             f'<g class="map-source-device cursor-pointer" '
             f'data-ip="{html.escape(source_ip)}" '
@@ -290,7 +320,6 @@ def generate_map_html(parties_data: List[Dict[str, Any]], height: int = 360, fil
             f'data-proto="Local" '
             f'data-files="[]" '
             f'data-caveat="{html.escape(src_caveat_text)}">'
-            # Outer pulse rings
             f'<circle cx="{src_x:.1f}" cy="{src_y:.1f}" r="16" fill="#0EA5E9" opacity="0.15"/>'
             f'<circle cx="{src_x:.1f}" cy="{src_y:.1f}" r="11" fill="none" stroke="#0EA5E9" stroke-width="1.5" stroke-dasharray="3,2" opacity="0.75"/>'
             f'<circle cx="{src_x:.1f}" cy="{src_y:.1f}" r="6" fill="#0EA5E9" stroke="#ffffff" stroke-width="1.5"/>'
