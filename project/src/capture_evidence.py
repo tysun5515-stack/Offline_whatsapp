@@ -2,7 +2,7 @@
 import json
 import os
 import struct
-from typing import Dict, Iterable, Set, Tuple
+from typing import Dict, Iterable, Set, Tuple, Optional
 
 from src.pcap_reader import read_packets
 
@@ -45,10 +45,20 @@ def _pcapng_block(block_type: int, body: bytes) -> bytes:
     return struct.pack('>I', block_type) + struct.pack('<I', total) + body + struct.pack('<I', total)
 
 
-def write_filtered_capture(source_path: str, destination_path: str, packet_numbers: Set[int], output_format: str) -> int:
+def write_filtered_capture(source_path: str, destination_path: str, packet_numbers: Set[int], output_format: str, expected_source_count: Optional[int] = None) -> int:
     """Re-read raw evidence and write selected frames only. Returns written packet count."""
     os.makedirs(os.path.dirname(destination_path), exist_ok=True)
-    selected = [(ts, link, frame) for number, (ts, link, frame) in enumerate(read_packets(source_path), 1) if number in packet_numbers]
+    
+    source_count = 0
+    selected = []
+    for number, (ts, link, frame) in enumerate(read_packets(source_path), 1):
+        source_count += 1
+        if number in packet_numbers:
+            selected.append((ts, link, frame))
+            
+    if expected_source_count is not None and source_count != expected_source_count:
+        import logging
+        logging.warning(f"Re-read frame count ({source_count}) differs from parse count ({expected_source_count}) for {source_path}")
     if not selected:
         return 0
     if output_format == 'pcapng':

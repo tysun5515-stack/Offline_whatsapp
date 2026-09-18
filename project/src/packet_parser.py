@@ -4,7 +4,7 @@ packet_parser.py: Parses raw network frames into packet metadata records.
 
 import struct
 import socket
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 def parse_tls_client_hello_sni(tcp_payload: bytes) -> Optional[str]:
     """
@@ -130,6 +130,50 @@ def parse_dns_query(udp_payload: bytes) -> Optional[str]:
         
     return None
 
+def _dns_name(data: bytes, offset: int) -> Tuple[Optional[str], int]:
+    labels, jumped, next_offset, seen = [], False, offset, set()
+    while offset < len(data):
+        length = data[offset]
+        if length == 0:
+            return ".".join(labels), (next_offset if jumped else offset + 1)
+        if length & 0xC0 == 0xC0:
+            if offset + 1 >= len(data): return None, next_offset
+            pointer = ((length & 0x3F) << 8) | data[offset + 1]
+            if pointer in seen: return None, next_offset
+            seen.add(pointer)
+            if not jumped: next_offset = offset + 2; jumped = True
+            offset = pointer; continue
+        if length & 0xC0 or offset + 1 + length > len(data): return None, next_offset
+        labels.append(data[offset + 1:offset + 1 + length].decode("utf-8", errors="ignore"))
+        offset += length + 1
+    return None, next_offset
+
+
+def parse_dns_response(udp_payload: bytes) -> List[Dict[str, Any]]:
+    """Parse successful DNS response records, including compressed A/AAAA/CNAME names."""
+    if len(udp_payload) < 12: return []
+    flags = struct.unpack("!H", udp_payload[2:4])[0]
+    qdcount, ancount, _nscount, arcount = struct.unpack("!HHHH", udp_payload[4:12])
+    if not flags & 0x8000 or flags & 0x000F or not qdcount: return []
+    name, offset = _dns_name(udp_payload, 12)
+    if not name or offset + 4 > len(udp_payload): return []
+    offset += 4
+    records = []
+    for _ in range(ancount + arcount):
+        owner, offset = _dns_name(udp_payload, offset)
+        if owner is None or offset + 10 > len(udp_payload): return []
+        rtype, rclass, ttl, rdlength = struct.unpack("!HHIH", udp_payload[offset:offset + 10]); offset += 10
+        if offset + rdlength > len(udp_payload): return []
+        rdata = udp_payload[offset:offset + rdlength]; rdata_offset = offset; offset += rdlength
+        value = None
+        if rclass == 1 and rtype == 1 and rdlength == 4: value = ".".join(str(x) for x in rdata)
+        elif rclass == 1 and rtype == 28 and rdlength == 16:
+            import ipaddress; value = str(ipaddress.ip_address(rdata))
+        elif rclass == 1 and rtype == 5:
+            value, _ignored = _dns_name(udp_payload, rdata_offset)
+        if value: records.append({"question": name.lower(), "name": owner.lower(), "type": rtype, "value": value.lower(), "ttl": ttl})
+    return records
+
 def get_ip_header_offset(link_type: int, raw_frame: bytes) -> Tuple[Optional[int], Optional[int]]:
     """
     Strips link-layer headers based on link_type.
@@ -150,6 +194,43 @@ def get_ip_header_offset(link_type: int, raw_frame: bytes) -> Tuple[Optional[int
                 return None, None
             ethertype = struct.unpack('!H', raw_frame[offset + 2 : offset + 4])[0]
             offset += 4
+            
+        # Handle MPLS label stack (unicast 0x8847, multicast 0x8848)
+        if ethertype in (0x8847, 0x8848):
+            while offset + 4 <= len(raw_frame):
+                word = struct.unpack('!I', raw_frame[offset : offset + 4])[0]
+                s_bit = (word >> 8) & 0x1
+                offset += 4
+                if s_bit:
+                    break
+                    
+            if offset < len(raw_frame):
+                version = (raw_frame[offset] >> 4) & 0x0F
+                if version == 4:
+                    ethertype = 0x0800
+                elif version == 6:
+                    ethertype = 0x86DD
+                else:
+                    # Pseudowire fallback (EoMPLS)
+                    if offset + 4 <= len(raw_frame) and version == 0x0:
+                        offset += 4  # unconditionally skip the control word once detected
+                        
+                    # Attempt inner Ethernet parse from the (possibly advanced) offset
+                    if offset + 14 <= len(raw_frame):
+                        ethertype = struct.unpack('!H', raw_frame[offset + 12 : offset + 14])[0]
+                        offset += 14
+                        
+                        # Handle inner VLAN tags
+                        while ethertype in (0x8100, 0x88A8):
+                            if len(raw_frame) < offset + 4:
+                                return None, None
+                            ethertype = struct.unpack('!H', raw_frame[offset + 2 : offset + 4])[0]
+                            offset += 4
+                    else:
+                        return None, None
+            else:
+                return None, None
+                
         return offset, ethertype
         
     # Bug 12 fix: Add LINKTYPE_NULL (0) and LINKTYPE_LOOP (108) used by local loopback
@@ -217,6 +298,7 @@ def parse_packet(packet_no: int, timestamp: float, link_type: int, raw_frame: by
         "is_tls": False,
         "is_quic": False,
         "dns_query": None,
+        "dns_answers": [],
         "sni": None,
         "direction": None,
         "ip_ttl": None,
@@ -361,6 +443,7 @@ def parse_packet(packet_no: int, timestamp: float, link_type: int, raw_frame: by
             dns_query = parse_dns_query(udp_payload)
             if dns_query:
                 record["dns_query"] = dns_query
+            record["dns_answers"] = parse_dns_response(udp_payload)
                 
         # QUIC heuristic on UDP port 443:
         if src_port == 443 or dst_port == 443:

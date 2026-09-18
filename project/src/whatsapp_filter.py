@@ -70,11 +70,9 @@ DNS_PORTS: set = {53}
 
 WHATSAPP_CALL_PORT_RANGE = (1024, 65535)  # dynamic ports post-STUN
 
-def is_likely_call_media_port(port: Optional[int]) -> bool:
-    """Ports above 1024 on confirmed Meta IPs carrying UDP are almost
-    certainly post-STUN SRTP streams, not media CDN transfers.
-    CDN media always uses TCP/443; dynamic UDP = call stream."""
-    if port is None:
+def is_likely_call_media_port(port: Optional[int], protocol_type: Optional[str]) -> bool:
+    """True only for a server-side dynamic UDP call-media port."""
+    if port is None or (protocol_type or "").upper() != "UDP":
         return False
     return 1024 <= port <= 65535
 
@@ -307,35 +305,19 @@ def check_domain_matching(
 # Fix #5: port-based activity kept explicitly separate from SNI sub-activity.
 # ---------------------------------------------------------------------------
 def check_port_matching(
-    src_port: Optional[int], dst_port: Optional[int]
+    server_port: Optional[int], protocol_type: Optional[str]
 ) -> Tuple[str, List[str], Optional[str]]:
-    """
-    Port-based confidence signal. Returns (confidence, signals,
-    port_activity). `port_activity` (e.g. "media_or_https",
-    "chat_signaling", "call_signaling") is a WEAKER, inferred-from-port
-    signal - distinct from `check_domain_matching()`'s `sni_sub_activity`,
-    which is derived from an actually-observed hostname. When both are
-    available for the same flow, prefer `sni_sub_activity` for display
-    and keep `port_activity` visible only as corroborating/fallback
-    evidence - never overwrite one with the other under a shared key.
-    """
-    ports = {p for p in (src_port, dst_port) if p is not None}
-    
-    if ports & DNS_PORTS:
+    """Return protocol-aware confidence from the normalized server port only."""
+    protocol = (protocol_type or "").upper()
+    if server_port in DNS_PORTS:
         return "none", ["port_dns"], "dns_resolution"
-        
-    if ports & WHATSAPP_CHAT_PORTS:
+    if server_port in WHATSAPP_CHAT_PORTS:
         return "high", ["port_chat"], "chat_signaling"
-    if ports & WHATSAPP_STUN_PORTS:
+    if server_port in WHATSAPP_STUN_PORTS:
         return "medium", ["port_stun"], "call_signaling"
-    # Media CDN ports (443, 80) are TCP only. UDP 443 is usually a call relay/fallback.
-    if ports & WHATSAPP_MEDIA_PORTS:
-        # Check if we have protocol context (we don't get it in check_port_matching)
-        # So we return media_or_https here, but we will fix resolve_final_label to correctly override it
+    if protocol == "TCP" and server_port in WHATSAPP_MEDIA_PORTS:
         return "low", ["port_https"], "media_or_https"
-    # NEW: dynamic UDP port on confirmed Meta IP = call stream candidate
-    # Confidence is low here — CIDR match must corroborate
-    if any(is_likely_call_media_port(p) for p in ports):
+    if is_likely_call_media_port(server_port, protocol):
         return "low", ["port_dynamic_udp"], "call_media_candidate"
     return "none", [], None
 

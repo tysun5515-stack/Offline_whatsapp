@@ -35,29 +35,46 @@ def _looks_like_session_start(packet: Dict[str, Any]) -> bool:
     return is_bare_syn or has_sni
 
 
+def _is_meta_endpoint(ip_str: Optional[str]) -> bool:
+    """Return whether an endpoint belongs to a configured Meta CIDR."""
+    confidence, _signals = wf.check_cidr_matching(ip_str)
+    return confidence == "high"
+
+
+def _is_recognized_server_port(port: Optional[int]) -> bool:
+    """Return whether a port is a known service port, not merely a high port."""
+    return port in (wf.WHATSAPP_CHAT_PORTS | wf.WHATSAPP_STUN_PORTS | wf.WHATSAPP_MEDIA_PORTS | wf.DNS_PORTS)
+
+
+def _resolve_flow_roles(packet: Dict[str, Any]) -> Tuple[str, Optional[int], str, Optional[int], str]:
+    """Infer roles without treating a server-first capture as client-first."""
+    src_ip, dst_ip = packet["src_ip"], packet["dst_ip"]
+    src_port, dst_port = packet["src_port"], packet["dst_port"]
+    src_meta, dst_meta = _is_meta_endpoint(src_ip), _is_meta_endpoint(dst_ip)
+    if src_meta != dst_meta:
+        return (dst_ip, dst_port, src_ip, src_port, "meta_cidr") if src_meta else (src_ip, src_port, dst_ip, dst_port, "meta_cidr")
+    src_private, dst_private = is_private(src_ip), is_private(dst_ip)
+    if src_private != dst_private:
+        return (src_ip, src_port, dst_ip, dst_port, "private_public") if src_private else (dst_ip, dst_port, src_ip, src_port, "private_public")
+    flags = packet.get("tcp_udp_flags") or ""
+    if packet.get("protocol") == "TCP" and "SYN" in flags and "ACK" not in flags:
+        return src_ip, src_port, dst_ip, dst_port, "tcp_syn"
+    src_service, dst_service = _is_recognized_server_port(src_port), _is_recognized_server_port(dst_port)
+    if src_service != dst_service:
+        return (dst_ip, dst_port, src_ip, src_port, "service_port") if src_service else (src_ip, src_port, dst_ip, dst_port, "service_port")
+    return src_ip, src_port, dst_ip, dst_port, "first_packet_fallback"
+
+
 def create_new_flow(packet: Dict[str, Any], key: Tuple) -> Dict[str, Any]:
     """Helper to initialize a new active flow dictionary."""
-    src_ip = packet["src_ip"]
-    dst_ip = packet["dst_ip"]
-    src_port = packet["src_port"]
-    dst_port = packet["dst_port"]
-
-    if is_private(src_ip) and not is_private(dst_ip):
-        client_ip, server_ip = src_ip, dst_ip
-        client_port, server_port = src_port, dst_port
-    elif not is_private(src_ip) and is_private(dst_ip):
-        client_ip, server_ip = dst_ip, src_ip
-        client_port, server_port = dst_port, src_port
-    else:
-        client_ip, server_ip = src_ip, dst_ip
-        client_port, server_port = src_port, dst_port
-
+    client_ip, client_port, server_ip, server_port, role_source = _resolve_flow_roles(packet)
     return {
         "key": key,
         "client_ip": client_ip,
         "client_port": client_port,
         "server_ip": server_ip,
         "server_port": server_port,
+        "endpoint_role_source": role_source,
         "protocol_type": packet["protocol"],
         "start_time": packet["timestamp"],
         "session_start_confirmed": _looks_like_session_start(packet),

@@ -137,6 +137,14 @@ def init_analysis_db():
         conn.execute("ALTER TABLE parties ADD COLUMN media_type TEXT")
     except Exception:
         pass
+    for column in (
+        "endpoint_role_source TEXT", "matched_meta_ip TEXT", "whatsapp_signals TEXT", "acceptance_reason TEXT",
+        "dns_correlated_hostname TEXT", "dns_correlated_ip TEXT", "dns_response_timestamp REAL", "dns_expires_at REAL"
+    ):
+        try:
+            conn.execute(f"ALTER TABLE whatsapp_packets ADD COLUMN {column}")
+        except sqlite3.OperationalError:
+            pass
     # Existing derived rows predate traffic_class.  Their persisted confidence
     # is the only reliable historical source for the backfill.
     conn.execute("""
@@ -155,6 +163,17 @@ def init_analysis_db():
         conn.execute("ALTER TABLE batch_metrics ADD COLUMN total_raw_packets INTEGER DEFAULT 0")
     except Exception:
         pass
+    for column in (
+        "pass1_accepted INTEGER DEFAULT 0",
+        "pass2_dns_accepted INTEGER DEFAULT 0",
+        "rejected_no_signal INTEGER DEFAULT 0",
+        "non_ip_count INTEGER DEFAULT 0",
+        "reconciliation_ok INTEGER DEFAULT 1"
+    ):
+        try:
+            conn.execute(f"ALTER TABLE batch_metrics ADD COLUMN {column}")
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
@@ -162,12 +181,16 @@ def upsert_batch_metrics(batch_id: str, metrics: Dict[str, Any]):
     conn = _connect()
     conn.execute(
         """INSERT OR REPLACE INTO batch_metrics
-           (batch_id, packet_count, flow_count, whatsapp_count, detected_os, bypass_mode, total_raw_packets)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           (batch_id, packet_count, flow_count, whatsapp_count, detected_os, bypass_mode, total_raw_packets,
+            pass1_accepted, pass2_dns_accepted, rejected_no_signal, non_ip_count, reconciliation_ok)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (batch_id, metrics.get('packet_count', 0), metrics.get('flow_count', 0), 
          metrics.get('whatsapp_count', 0), metrics.get('detected_os', 'unknown'),
          1 if metrics.get('bypass_mode') else 0,
-         metrics.get('total_raw_packets', 0))
+         metrics.get('total_raw_packets', 0),
+         metrics.get('pass1_accepted', 0), metrics.get('pass2_dns_accepted', 0),
+         metrics.get('rejected_no_signal', 0), metrics.get('non_ip_count', 0),
+         1 if metrics.get('reconciliation_ok', True) else 0)
     )
     conn.commit()
     conn.close()
@@ -201,8 +224,9 @@ def insert_whatsapp_packets(batch_id: str, upload_id: str, filename: str, packet
         """INSERT INTO whatsapp_packets
            (batch_id, upload_id, filename, packet_no, timestamp, src_ip, dst_ip, src_port, dst_port,
             protocol, length, flow_id, whatsapp_confidence, whatsapp_media_guess,
-            sub_activity, ip_ttl, is_stun_binding)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            sub_activity, endpoint_role_source, matched_meta_ip, whatsapp_signals, acceptance_reason,
+            ip_ttl, is_stun_binding, dns_correlated_hostname, dns_correlated_ip, dns_response_timestamp, dns_expires_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 batch_id, upload_id, filename, p.get('packet_no'), p.get('timestamp'),
@@ -211,7 +235,11 @@ def insert_whatsapp_packets(batch_id: str, upload_id: str, filename: str, packet
                 p.get('protocol'), p.get('length'),
                 p.get('flow_id'), p.get('whatsapp_confidence'),
                 p.get('whatsapp_media_guess'), p.get('sub_activity'),
-                p.get('ip_ttl'), 1 if p.get('is_stun_binding') else 0
+                p.get('endpoint_role_source'), p.get('matched_meta_ip'),
+                p.get('whatsapp_signals'), p.get('acceptance_reason'),
+                p.get('ip_ttl'), 1 if p.get('is_stun_binding') else 0,
+                p.get('dns_correlated_hostname'), p.get('dns_correlated_ip'),
+                p.get('dns_response_timestamp'), p.get('dns_expires_at')
             )
             for p in packets_sorted
         ]

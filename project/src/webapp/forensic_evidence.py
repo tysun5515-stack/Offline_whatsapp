@@ -22,8 +22,8 @@ except ImportError:
     WHATSAPP_STUN_PORTS = {3478}
     WHATSAPP_MEDIA_PORTS = {443}
 
-    def is_likely_call_media_port(port: Optional[int]) -> bool:
-        return port is not None and 1024 <= port <= 65535
+    def is_likely_call_media_port(port: Optional[int], protocol_type: Optional[str]) -> bool:
+        return port is not None and (protocol_type or "").upper() == "UDP" and 1024 <= port <= 65535
 
 
 def check_ip_in_meta_ranges(ip_str: Optional[str]) -> bool:
@@ -108,7 +108,7 @@ def build_evidence_trail(packet: Dict[str, Any]) -> Dict[str, Any]:
     has_chat_port = bool(chat_port_matched) or raw_sub_activity == "chat_signaling"
     has_stun_port = bool(ports & WHATSAPP_STUN_PORTS) or is_stun
     has_media_port = bool(ports & WHATSAPP_MEDIA_PORTS)
-    has_dynamic_udp = proto == "UDP" and any(is_likely_call_media_port(p) for p in ports)
+    has_dynamic_udp = proto == "UDP" and any(is_likely_call_media_port(p, proto) for p in ports)
 
     # -------------------------------------------------------------
     # Forensic Reconciliation: Enforce physical transport truth
@@ -144,6 +144,13 @@ def build_evidence_trail(packet: Dict[str, Any]) -> Dict[str, Any]:
     evidence: List[Dict[str, Any]] = []
     exclusions: List[Dict[str, Any]] = []
 
+    endpoint_role_source = packet.get("endpoint_role_source")
+    matched_meta_ip = packet.get("matched_meta_ip")
+    acceptance_reason = packet.get("acceptance_reason")
+    if endpoint_role_source:
+        evidence.append({"signal": "endpoint_role_resolution", "label": "Endpoint Role Resolution", "explanation": f"Roles resolved using {endpoint_role_source.replace('_', ' ')}" + (f"; matched Meta endpoint {matched_meta_ip}." if matched_meta_ip else "."), "strength": "HIGH" if endpoint_role_source == "meta_cidr" else "NEUTRAL", "status": "passed" if endpoint_role_source == "meta_cidr" else "neutral"})
+    if acceptance_reason:
+        evidence.append({"signal": "acceptance_reason", "label": "Filter Acceptance Decision", "explanation": f"Flow retained because of {acceptance_reason.replace('_', ' ')}.", "strength": "HIGH" if acceptance_reason == "cidr_strong" else "MEDIUM", "status": "passed"})
     # Evidence 1: IP & Infrastructure Match
     if meta_matched_ip:
         evidence.append({
@@ -181,7 +188,7 @@ def build_evidence_trail(packet: Dict[str, Any]) -> Dict[str, Any]:
             "status": "passed"
         })
     elif has_dynamic_udp:
-        dyn_port = next(p for p in ports if is_likely_call_media_port(p))
+        dyn_port = next(p for p in ports if is_likely_call_media_port(p, proto))
         evidence.append({
             "signal": "port_dynamic_udp",
             "label": "Dynamic UDP VoIP / SRTP Media Port",

@@ -303,7 +303,6 @@ def create_app():
                 for party in parties[:10]:
                     geo = get_geo(party['remote_ip'])
                     if not geo:
-                        from src.geolocation import geolocate
                         geo_new = geolocate(party['remote_ip'])
                         if geo_new:
                             upsert_geo(party['remote_ip'], {
@@ -526,7 +525,6 @@ def create_app():
             for p in parties_data:
                 geo = get_geo(p['remote_ip'])
                 if not geo:
-                    from src.geolocation import geolocate
                     geo_new = geolocate(p['remote_ip'])
                     if geo_new:
                         upsert_geo(p['remote_ip'], {
@@ -743,7 +741,6 @@ def create_app():
                             _cgeo = get_geo(client_ip)
                             if not _cgeo:
                                 try:
-                                    from src.geolocation import geolocate
                                     _gnew = geolocate(client_ip)
                                     if _gnew:
                                         upsert_geo(client_ip, {
@@ -1057,7 +1054,7 @@ def create_app():
                         destination = _filtered_path(upload_id, upload['filename'], upload.get('file_format'))
                         if os.path.exists(destination):
                             os.remove(destination)
-                        written = write_filtered_capture(upload['stored_path'], destination, packet_numbers, upload.get('file_format'))
+                        written = write_filtered_capture(upload['stored_path'], destination, packet_numbers, upload.get('file_format'), stats.get('packet_count'))
                         if written:
                             update_filtered_evidence(upload_id, destination, upload.get('file_format'), written, 'filtered_output_created')
                         else:
