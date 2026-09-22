@@ -139,7 +139,8 @@ def init_analysis_db():
         pass
     for column in (
         "endpoint_role_source TEXT", "matched_meta_ip TEXT", "whatsapp_signals TEXT", "acceptance_reason TEXT",
-        "dns_correlated_hostname TEXT", "dns_correlated_ip TEXT", "dns_response_timestamp REAL", "dns_expires_at REAL"
+        "dns_correlated_hostname TEXT", "dns_correlated_ip TEXT", "dns_response_timestamp REAL", "dns_expires_at REAL",
+        "tls_cipher_suite TEXT", "tls_crypto_info TEXT", "quic_version TEXT"
     ):
         try:
             conn.execute(f"ALTER TABLE whatsapp_packets ADD COLUMN {column}")
@@ -174,6 +175,12 @@ def init_analysis_db():
             conn.execute(f"ALTER TABLE batch_metrics ADD COLUMN {column}")
         except Exception:
             pass
+            
+    # Add indexes for performance
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_upload ON whatsapp_packets(upload_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_ts ON whatsapp_packets(timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_confidence ON whatsapp_packets(whatsapp_confidence)")
+    
     conn.commit()
     conn.close()
 
@@ -218,32 +225,38 @@ def insert_whatsapp_packets(batch_id: str, upload_id: str, filename: str, packet
     conn = _connect()
     conn.execute("DELETE FROM whatsapp_packets WHERE upload_id = ?", (upload_id,))
 
-    packets_sorted = sorted(packets, key=lambda p: p['timestamp'])
+    packets_sorted = sorted(packets, key=lambda p: p['timestamp'] if p.get('timestamp') is not None else 0)
 
-    conn.executemany(
-        """INSERT INTO whatsapp_packets
-           (batch_id, upload_id, filename, packet_no, timestamp, src_ip, dst_ip, src_port, dst_port,
-            protocol, length, flow_id, whatsapp_confidence, whatsapp_media_guess,
-            sub_activity, endpoint_role_source, matched_meta_ip, whatsapp_signals, acceptance_reason,
-            ip_ttl, is_stun_binding, dns_correlated_hostname, dns_correlated_ip, dns_response_timestamp, dns_expires_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        [
-            (
-                batch_id, upload_id, filename, p.get('packet_no'), p.get('timestamp'),
-                p.get('src_ip'), p.get('dst_ip'),
-                p.get('src_port'), p.get('dst_port'),
-                p.get('protocol'), p.get('length'),
-                p.get('flow_id'), p.get('whatsapp_confidence'),
-                p.get('whatsapp_media_guess'), p.get('sub_activity'),
-                p.get('endpoint_role_source'), p.get('matched_meta_ip'),
-                p.get('whatsapp_signals'), p.get('acceptance_reason'),
-                p.get('ip_ttl'), 1 if p.get('is_stun_binding') else 0,
-                p.get('dns_correlated_hostname'), p.get('dns_correlated_ip'),
-                p.get('dns_response_timestamp'), p.get('dns_expires_at')
-            )
-            for p in packets_sorted
-        ]
-    )
+    # Chunk inserts to save memory
+    CHUNK_SIZE = 10000
+    for i in range(0, len(packets_sorted), CHUNK_SIZE):
+        chunk = packets_sorted[i:i + CHUNK_SIZE]
+        conn.executemany(
+            """INSERT INTO whatsapp_packets
+               (batch_id, upload_id, filename, packet_no, timestamp, src_ip, dst_ip, src_port, dst_port,
+                protocol, length, flow_id, whatsapp_confidence, whatsapp_media_guess,
+                sub_activity, endpoint_role_source, matched_meta_ip, whatsapp_signals, acceptance_reason,
+                ip_ttl, is_stun_binding, dns_correlated_hostname, dns_correlated_ip, dns_response_timestamp, dns_expires_at,
+                tls_cipher_suite, tls_crypto_info, quic_version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    batch_id, upload_id, filename, p.get('packet_no'), p.get('timestamp'),
+                    p.get('src_ip'), p.get('dst_ip'),
+                    p.get('src_port'), p.get('dst_port'),
+                    p.get('protocol'), p.get('length'),
+                    p.get('flow_id'), p.get('whatsapp_confidence'),
+                    p.get('whatsapp_media_guess'), p.get('sub_activity'),
+                    p.get('endpoint_role_source'), p.get('matched_meta_ip'),
+                    p.get('whatsapp_signals'), p.get('acceptance_reason'),
+                    p.get('ip_ttl'), 1 if p.get('is_stun_binding') else 0,
+                    p.get('dns_correlated_hostname'), p.get('dns_correlated_ip'),
+                    p.get('dns_response_timestamp'), p.get('dns_expires_at'),
+                    p.get('tls_cipher_suite'), p.get('tls_crypto_info'), p.get('quic_version')
+                )
+                for p in chunk
+            ]
+        )
     conn.commit()
     count = conn.execute(
         "SELECT COUNT(1) FROM whatsapp_packets WHERE upload_id = ?", (upload_id,)

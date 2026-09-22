@@ -80,6 +80,9 @@ def _emit_flow_packets(
         if labels.get("is_infrastructure") and is_wa_flow:
             p["is_infrastructure"] = True
             p["whatsapp_confidence"] = "infrastructure"
+        p["tls_cipher_suite"] = p.get("tls_cipher_suite")
+        p["tls_crypto_info"] = p.get("tls_crypto_info")
+        p["quic_version"] = p.get("quic_version")
         p["flow_id"] = str(flow["flow_id"])
         all_whatsapp_packets.append(p)
 
@@ -97,7 +100,11 @@ def process_pcap_to_whatsapp_packets(
     packet_no = 0
     for ts, link, data in read_packets(pcap_path):
         packet_no += 1
-        packet_records.append(parse_packet(packet_no, ts, link, data))
+        try:
+            packet_records.append(parse_packet(packet_no, ts, link, data))
+        except Exception as e:
+            # Error isolation: bad frame doesn't crash batch
+            continue
         
     # 2. OS Fingerprinting & OS-aware flow building
     os_hint, os_conf = detect_os_hint(packet_records)
@@ -117,6 +124,7 @@ def process_pcap_to_whatsapp_packets(
     all_whatsapp_packets = []
     whatsapp_flow_count = 0
     
+    # PASS 1 (Reverification Step): Seed the registry with high-confidence matches
     for flow in flows:
         sni, dns = None, None
         for p in flow["packets"]:
@@ -126,60 +134,17 @@ def process_pcap_to_whatsapp_packets(
         conf_domain, sig_domain, sub_activity_domain = check_domain_matching(sni, dns)
         conf_cidr, sig_cidr, matched_meta_ip = _check_flow_cidr_matching(flow)
         inference_ip = matched_meta_ip or flow["server_ip"]
-        conf_inf, sig_inf = check_inference_matching(inference_ip, registry)
         conf_port, sig_port, port_activity = check_port_matching(flow["server_port"], flow["protocol_type"])
         
         dns_correlation = _flow_dns_correlation(flow, dns_index)
-        sig_dns_correlation = ["dns_correlated_whatsapp"] if dns_correlation else []
-        signals = sig_domain + sig_cidr + sig_inf + sig_port + sig_dns_correlation
         
-        # High confidence triggers
+        # High confidence triggers seed the registry
         if conf_domain == "high" or conf_cidr == "high" or conf_port == "high" or dns_correlation:
-            flow["whatsapp_confidence"] = "high"
             registry.seed(inference_ip)
-        elif conf_domain == "low" or conf_inf == "medium" or conf_port == "medium":
-            flow["whatsapp_confidence"] = "medium"
-        else:
-            flow["whatsapp_confidence"] = "none"
-            
-        flow["whatsapp_signals"] = ",".join(signals)
-        flow["matched_meta_ip"] = matched_meta_ip
-        flow["dns_correlation"] = dns_correlation
-        flow["acceptance_reason"] = "dns_correlated_whatsapp" if dns_correlation else ("cidr_strong" if conf_cidr == "high" else ("domain_strong" if conf_domain == "high" else ("port_strong" if conf_port == "high" else ("corroborating_signal" if flow["whatsapp_confidence"] == "medium" else "no_whatsapp_signal"))))
-
-        
-        # Sub-activity (prioritize domain over port)
-        flow["sub_activity"] = sub_activity_domain or port_activity
-        
-        # Sub-classify media type with burst-aware logic
-        flow_duration = (flow.get("last_seen", 0) - flow.get("first_seen", 0)) or 1.0
-        cidr_confirmed = (conf_cidr == "high")
-        flow["media_type"] = guess_media_type(
-            flow["packets"], 
-            flow["protocol_type"], 
-            flow_duration,
-            sni_sub_activity=sub_activity_domain,
-            port_activity=port_activity,
-            cidr_confirmed=cidr_confirmed
-        )
-        
-        # Extract packets
-        is_wa_flow = flow["whatsapp_confidence"] in ["high", "medium", "infrastructure"]
-        if keep_all_traffic or is_wa_flow:
-            whatsapp_flow_count += 1
-            
-            labels = resolve_activity_labels(sub_activity_domain, port_activity, flow["protocol_type"])
-            
-            final_media_guess = resolve_final_label(
-                flow["media_type"], 
-                port_activity, 
-                flow["protocol_type"]
-            )
-            
-    registry = ConfirmedServerRegistry(pcap_id=os.path.basename(pcap_path))
     all_whatsapp_packets = []
     whatsapp_flow_count = 0
     
+    # PASS 2: Re-evaluate and extract all packets using fully seeded registry
     for flow in flows:
         sni, dns = None, None
         for p in flow["packets"]:
@@ -188,7 +153,7 @@ def process_pcap_to_whatsapp_packets(
             
         conf_domain, sig_domain, sub_activity_domain = check_domain_matching(sni, dns)
         conf_cidr, sig_cidr, matched_meta_ip = _check_flow_cidr_matching(flow)
-        inference_ip = flow["server_ip"]
+        inference_ip = matched_meta_ip or flow["server_ip"]
         conf_inf, sig_inf = check_inference_matching(inference_ip, registry)
         conf_port, sig_port, port_activity = check_port_matching(flow["server_port"], flow["protocol_type"])
         

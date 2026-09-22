@@ -2,9 +2,151 @@
 packet_parser.py: Parses raw network frames into packet metadata records.
 """
 
+import json
 import struct
 import socket
 from typing import Optional, Dict, Any, Tuple, List
+
+# PQC / Hybrid Groups mapping
+PQC_GROUPS = {
+    0x1FFB: 'X25519MLKEM768',   # Current Chrome/Cloudflare production
+    0x0200: 'Kyber512',         # NIST round 3 draft
+    0x0201: 'Kyber768',         # NIST round 3 draft  
+    0x0202: 'Kyber1024',        # NIST round 3 draft
+    0x11EC: 'X25519Kyber768-draft', # Deprecated draft
+    0x6399: 'secp256r1Kyber768', # Hybrid variant
+}
+CLASSICAL_GROUPS = {
+    0x001D: 'x25519', 0x0017: 'secp256r1',
+    0x0018: 'secp384r1', 0x0019: 'secp521r1',
+    0x001E: 'x448',
+}
+
+def parse_tls_handshake_crypto(tcp_payload: bytes) -> Optional[Dict[str, Any]]:
+    """
+    Parses a TLS Handshake record (ClientHello or ServerHello) to extract crypto parameters:
+    cipher suites, supported groups, keyshare sizes, ALPN, and TLS version.
+    """
+    if len(tcp_payload) < 9:
+        return None
+        
+    rec_type = tcp_payload[0]
+    if rec_type != 22: # Handshake
+        return None
+        
+    handshake_type = tcp_payload[5]
+    if handshake_type not in (1, 2): # 1=ClientHello, 2=ServerHello
+        return None
+        
+    crypto_info = {
+        'type': 'client_hello' if handshake_type == 1 else 'server_hello',
+        'version': None,
+        'cipher': None,
+        'groups': [],
+        'pqc': False,
+        'ks': {},
+        'alpn': []
+    }
+    
+    idx = 43 # skip record header (5), msg type (1), msg len (3), client/server ver (2), random (32)
+    if idx >= len(tcp_payload):
+        return None
+        
+    # Session ID
+    session_id_len = tcp_payload[idx]
+    idx += 1 + session_id_len
+    if idx >= len(tcp_payload): return None
+    
+    # Cipher Suites
+    if handshake_type == 1:
+        if idx + 2 > len(tcp_payload): return None
+        cipher_suites_len = struct.unpack('!H', tcp_payload[idx : idx + 2])[0]
+        idx += 2 + cipher_suites_len
+    else: # ServerHello
+        if idx + 2 > len(tcp_payload): return None
+        cipher = struct.unpack('!H', tcp_payload[idx : idx + 2])[0]
+        crypto_info['cipher'] = f'0x{cipher:04X}'
+        idx += 2
+        
+    if idx >= len(tcp_payload): return None
+    
+    # Compression Methods
+    compression_methods_len = tcp_payload[idx]
+    idx += 1 + compression_methods_len
+    
+    if idx + 2 > len(tcp_payload):
+        return crypto_info
+        
+    # Extensions Length
+    extensions_len = struct.unpack('!H', tcp_payload[idx : idx + 2])[0]
+    idx += 2
+    extensions_end = min(idx + extensions_len, len(tcp_payload))
+    
+    # Walk extensions
+    while idx + 4 <= extensions_end:
+        ext_type, ext_len = struct.unpack('!HH', tcp_payload[idx : idx + 4])
+        idx += 4
+        if idx + ext_len > extensions_end: break
+        
+        ext_data = tcp_payload[idx : idx + ext_len]
+        
+        # ALPN (0x0010)
+        if ext_type == 0x0010 and len(ext_data) >= 2:
+            list_len = struct.unpack('!H', ext_data[0:2])[0]
+            s_idx = 2
+            while s_idx < min(2 + list_len, len(ext_data)):
+                alpn_len = ext_data[s_idx]
+                s_idx += 1
+                if s_idx + alpn_len <= len(ext_data):
+                    try:
+                        crypto_info['alpn'].append(ext_data[s_idx : s_idx + alpn_len].decode('utf-8'))
+                    except: pass
+                s_idx += alpn_len
+                
+        # Supported Groups (0x000a)
+        elif ext_type == 0x000a and len(ext_data) >= 2:
+            list_len = struct.unpack('!H', ext_data[0:2])[0]
+            for i in range(2, min(2 + list_len, len(ext_data)), 2):
+                if i + 2 <= len(ext_data):
+                    grp = struct.unpack('!H', ext_data[i:i+2])[0]
+                    grp_name = PQC_GROUPS.get(grp, CLASSICAL_GROUPS.get(grp, f'0x{grp:04X}'))
+                    crypto_info['groups'].append(grp_name)
+                    if grp in PQC_GROUPS:
+                        crypto_info['pqc'] = True
+                        
+        # Key Share (0x0033)
+        elif ext_type == 0x0033:
+            if handshake_type == 1 and len(ext_data) >= 2: # ClientHello
+                list_len = struct.unpack('!H', ext_data[0:2])[0]
+                s_idx = 2
+                while s_idx + 4 <= min(2 + list_len, len(ext_data)):
+                    grp, ks_len = struct.unpack('!HH', ext_data[s_idx : s_idx + 4])
+                    s_idx += 4
+                    grp_name = PQC_GROUPS.get(grp, CLASSICAL_GROUPS.get(grp, f'0x{grp:04X}'))
+                    crypto_info['ks'][grp_name] = ks_len
+                    if grp in PQC_GROUPS: crypto_info['pqc'] = True
+                    s_idx += ks_len
+            elif handshake_type == 2 and len(ext_data) >= 2: # ServerHello
+                grp = struct.unpack('!H', ext_data[0:2])[0]
+                grp_name = PQC_GROUPS.get(grp, CLASSICAL_GROUPS.get(grp, f'0x{grp:04X}'))
+                crypto_info['groups'] = [grp_name]
+                if grp in PQC_GROUPS: crypto_info['pqc'] = True
+                
+        # Supported Versions (0x002b)
+        elif ext_type == 0x002b:
+            if handshake_type == 1 and len(ext_data) >= 1: # ClientHello
+                list_len = ext_data[0]
+                for i in range(1, min(1 + list_len, len(ext_data)), 2):
+                    if i + 2 <= len(ext_data):
+                        ver = struct.unpack('!H', ext_data[i:i+2])[0]
+                        if ver == 0x0304: crypto_info['version'] = '1.3'
+            elif handshake_type == 2 and len(ext_data) >= 2: # ServerHello
+                ver = struct.unpack('!H', ext_data[0:2])[0]
+                if ver == 0x0304: crypto_info['version'] = '1.3'
+                
+        idx += ext_len
+        
+    return crypto_info
 
 def parse_tls_client_hello_sni(tcp_payload: bytes) -> Optional[str]:
     """
@@ -301,10 +443,12 @@ def parse_packet(packet_no: int, timestamp: float, link_type: int, raw_frame: by
         "dns_answers": [],
         "sni": None,
         "direction": None,
-        "ip_ttl": None,
         "is_stun_binding": False,
         "stun_mapped_address": None,
         "tcp_window_size": None,
+        "tls_cipher_suite": None,
+        "tls_crypto_info": None,
+        "quic_version": None,
     }
     
     offset, ethertype = get_ip_header_offset(link_type, raw_frame)
@@ -426,6 +570,11 @@ def parse_packet(packet_no: int, timestamp: float, link_type: int, raw_frame: by
                         sni = parse_tls_client_hello_sni(tcp_payload)
                         if sni:
                             record["sni"] = sni
+                        crypto = parse_tls_handshake_crypto(tcp_payload)
+                        if crypto:
+                            record["tls_crypto_info"] = json.dumps(crypto)
+                            if crypto.get("cipher"):
+                                record["tls_cipher_suite"] = crypto["cipher"]
                             
     elif ip_proto == 17:  # UDP
         record["protocol"] = "UDP"
@@ -451,6 +600,9 @@ def parse_packet(packet_no: int, timestamp: float, link_type: int, raw_frame: by
                 first_byte = udp_payload[0]
                 if (first_byte & 0xC0) == 0xC0:
                     record["is_quic"] = True
+                    if len(udp_payload) >= 5:
+                        quic_ver = struct.unpack('!I', udp_payload[1:5])[0]
+                        record["quic_version"] = f"0x{quic_ver:08X}"
 
         # STUN binding request/response parsing:
         if len(udp_payload) >= 20:

@@ -480,6 +480,10 @@
     <div class="kpi-l">Caveated Parties</div>
     <div class="kpi-v {% if caveated_count > 0 %}warn{% endif %}">{{ caveated_count }}</div>
   </div>
+  <div class="kpi">
+    <div class="kpi-l">Detected Calls</div>
+    <div class="kpi-v" id="kpi-calls">0</div>
+  </div>
 </div>
 
 {% if caveated_count > 0 %}
@@ -602,6 +606,9 @@
         <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Role</th>
         <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Activity</th>
         <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Confidence</th>
+        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">
+          <i class="fa-solid fa-shield-halved mr-1 text-purple-500"></i>Crypto Info
+        </th>
         <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider">Location</th>
         <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 tracking-wider"></th>
       </tr>
@@ -662,12 +669,24 @@
   }
   function allFiles() { FILES.forEach((_, i) => active.add(i)); updateAll(); }
 
+  function updateCallKpi() {
+    const callParties = PARTIES.filter(p => p.callDuration > 0);
+    const totalCallTime = callParties.reduce((s, p) => s + p.callDuration, 0);
+    const el = document.getElementById('kpi-calls');
+    if (el) {
+      el.textContent = callParties.length > 0
+        ? `${callParties.length} (${fmtDuration(totalCallTime)} total)`
+        : '0';
+    }
+  }
+
   function updateAll() {
     renderFileList();
     drawMap();
     renderDist();
     renderParties();
     renderTimeline();
+    updateCallKpi();
   }
 
   function handleDistClick(i) {
@@ -721,13 +740,14 @@
       if (partyConfidenceFilter !== 'all' && (p.conf || '').toLowerCase() !== partyConfidenceFilter) return false;
       if (!query) return true;
       const fileNames = p.files.map(fi => (FILES[fi] || {}).n || '').join(' ');
-      const searchable = [p.ip, p.role, p.activity, p.country, p.city, p.asn, p.ipClassification, fileNames].join(' ').toLowerCase();
+      const cryptoStr = p.crypto ? JSON.stringify(p.crypto) : '';
+      const searchable = [p.ip, p.role, p.activity, p.country, p.city, p.asn, p.ipClassification, fileNames, cryptoStr].join(' ').toLowerCase();
       return searchable.includes(query);
     });
     const count = document.getElementById('party-filter-count');
     if (count) count.textContent = `${visible.length} of ${PARTIES.length} parties`;
     if (!visible.length) {
-      document.getElementById('partyBody').innerHTML = '<tr><td colspan="12" class="px-4 py-10 text-center text-sm text-gray-400">No parties match the current filters.</td></tr>';
+      document.getElementById('partyBody').innerHTML = '<tr><td colspan="13" class="px-4 py-10 text-center text-sm text-gray-400">No parties match the current filters.</td></tr>';
       return;
     }
     document.getElementById('partyBody').innerHTML = visible.map(p => {
@@ -735,6 +755,28 @@
       const confColor = p.conf === 'High' ? 'text-green-600' : p.conf === 'Medium' ? 'text-yellow-600' : p.conf === 'Unclassified' ? 'text-slate-600' : 'text-gray-400';
       const roleClass = p.role.includes('CDN') ? 'role-pill role-cdn' : 'role-pill';
       const caveatIcon = p.caveat ? `<i class="fa-solid fa-triangle-exclamation text-orange-500" title="${p.caveat_label}"></i>` : '';
+      const cBadge = cryptoBadge(p);
+      
+      let activityCell = `<td class="px-4 py-3 text-xs text-gray-500 font-mono align-top">${p.activity}`;
+      if (p.callDuration > 0) {
+        const dur = fmtDuration(p.callDuration);
+        const multi = p.callWindows > 1 ? ` · ${p.callWindows} calls` : '';
+        activityCell += `
+          <div class="mt-1">
+            <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full 
+                         bg-emerald-50 border border-emerald-200 text-emerald-700 
+                         text-[10px] font-semibold whitespace-nowrap">
+              <svg class="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 
+                         01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 
+                         1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 
+                         18 2 12.18 2 5V3z"/>
+              </svg>
+              ${dur}${multi}
+            </span>
+          </div>`;
+      }
+      activityCell += `</td>`;
 
       return `<tr class="hover:bg-gray-50 cursor-pointer ${p.caveat ? 'bg-orange-50' : ''}">
       <td class="px-4 py-3 text-sm font-semibold text-gray-800">${p.ip}</td>
@@ -745,10 +787,11 @@
       <td class="px-4 py-3 text-xs text-gray-600">${p.bytes}</td>
       <td class="px-4 py-3 text-xs text-gray-600">${p.dur >= 3600 ? Math.round(p.dur / 3600) + 'h' : Math.round(p.dur) + 's'}</td>
       <td class="px-4 py-3"><span class="${roleClass}">${p.role}</span></td>
-      <td class="px-4 py-3 text-xs text-gray-500 font-mono">${p.activity}</td>
-      <td class="px-4 py-3 text-xs font-semibold ${confColor}">${p.conf === 'Unclassified' ? 'UNCLASSIFIED' : p.conf}</td>
-      <td class="px-4 py-3 text-xs text-gray-600 whitespace-nowrap">${p.country} <span class="text-gray-400">· ${p.asn.split(' ')[0]}</span></td>
-      <td class="px-4 py-3 text-center">${caveatIcon}</td>
+      ${activityCell}
+      <td class="px-4 py-3 text-xs font-semibold ${confColor} align-top">${p.conf === 'Unclassified' ? 'UNCLASSIFIED' : p.conf}</td>
+      <td class="px-4 py-3 align-top">${cBadge}</td>
+      <td class="px-4 py-3 text-xs text-gray-600 whitespace-nowrap align-top">${p.country} <span class="text-gray-400">· ${p.asn.split(' ')[0]}</span></td>
+      <td class="px-4 py-3 text-center align-top">${caveatIcon}</td>
     </tr>`;
     }).join('');
   }
@@ -770,11 +813,67 @@
     }).join('');
   }
 
+  function fmtDuration(secs) {
+    if (!secs || secs < 1) return null;
+    if (secs < 60)  return `${Math.round(secs)}s`;
+    if (secs < 3600) {
+      const m = Math.floor(secs / 60), s = Math.round(secs % 60);
+      return `${m}m ${s.toString().padStart(2,'0')}s`;
+    }
+    const h = Math.floor(secs / 3600), m = Math.round((secs % 3600) / 60);
+    return `${h}h ${m.toString().padStart(2,'0')}m`;
+  }
+
   function showTab(t) {
     document.getElementById('tab-p').className = 'tab' + (t === 'p' ? ' on' : '');
     document.getElementById('tab-s').className = 'tab' + (t === 's' ? ' on' : '');
     document.getElementById('pane-p').style.display = t === 'p' ? 'block' : 'none';
     document.getElementById('pane-s').style.display = t === 's' ? 'block' : 'none';
+  }
+
+  function cryptoBadge(p) {
+    const c = p.crypto;
+    if (!c) return '<span class="text-gray-300 text-xs">—</span>';
+    
+    const transport = c.transport || 'TLS';
+    const pqc = c.pqc_detected;
+    
+    let lines = [];
+    
+    // Transport type badge
+    const tBadge = transport === 'QUIC'
+      ? '<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700">QUIC</span>'
+      : '<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-700">TLS</span>';
+    
+    // PQC badge
+    const pqcBadge = pqc
+      ? '<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700 ml-1">⚛ PQC</span>'
+      : '';
+
+    // TLS version
+    let versionLine = '';
+    if (c.tls && c.tls.version) {
+      versionLine = `<div class="text-[10px] text-gray-500 leading-tight">TLS ${c.tls.version}</div>`;
+    } else if (c.quic_version) {
+      versionLine = `<div class="text-[10px] text-gray-500 leading-tight">QUIC v${c.quic_version}</div>`;
+    }
+    
+    // Groups
+    let groupLine = '';
+    if (c.tls && c.tls.groups && c.tls.groups.length) {
+      groupLine = `<div class="text-[10px] font-mono text-gray-500 truncate max-w-[140px] leading-tight" title="${c.tls.groups.join(', ')}">${c.tls.groups.slice(0,2).join(', ')}</div>`;
+    }
+    
+    // Cipher suite  
+    let cipherLine = '';
+    if (c.tls && c.tls.cipher) {
+      cipherLine = `<div class="text-[10px] font-mono text-gray-400 truncate max-w-[140px] leading-tight" title="${c.tls.cipher}">${c.tls.cipher}</div>`;
+    }
+
+    return `<div class="flex flex-col gap-0.5">
+      <div class="flex items-center mb-0.5">${tBadge}${pqcBadge}</div>
+      ${versionLine}${groupLine}${cipherLine}
+    </div>`;
   }
 
   function drawMap() {

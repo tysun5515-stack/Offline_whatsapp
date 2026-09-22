@@ -116,7 +116,8 @@ def create_app():
     flatten_evidence_storage_once(RAW_PCAP_FOLDER, FILTERED_PCAP_FOLDER)
     app.config['RAW_PCAP_FOLDER'] = RAW_PCAP_FOLDER
     app.config['FILTERED_PCAP_FOLDER'] = FILTERED_PCAP_FOLDER
-    app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024 # 100MB
+    # Allow large uploads for batch PCAPs
+    app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024 # 5GB
 
     def _format_for_name(filename):
         ext = os.path.splitext(filename)[1].lower()
@@ -859,7 +860,11 @@ def create_app():
                     'country': country,
                     'city': p.get('geo_city', '—'),
                     'asn': asn,
-                    'caveat': not p.get('location_reliable', True)
+                    'caveat': not p.get('location_reliable', True),
+                    'crypto': p.get('crypto_summary'),
+                    'callDuration': p.get('call_duration_s', 0),
+                    'longestCall': p.get('longest_call_s', 0),
+                    'callWindows': p.get('call_window_count', 0)
                 })
             
             files_json = json.dumps(files_data)
@@ -999,9 +1004,7 @@ def create_app():
 
     @app.route('/api/filter', methods=['POST'])
     def api_filter():
-        # Explicit IDs come from the upload receipt or selected RAW evidence.
-        # A selected capture is always processed in full so flow context is not
-        # truncated by the analyst's display date range.
+        # Enqueue an asynchronous filter job instead of blocking
         payload = request.get_json(silent=True) or {}
         requested_ids = payload.get('upload_ids', request.form.getlist('upload_ids'))
         if requested_ids is not None and not isinstance(requested_ids, list):
@@ -1020,68 +1023,27 @@ def create_app():
                 return jsonify({'error': 'No registered RAW evidence was selected.'}), 404
         else:
             uploads = scoped_uploads
+            
         if not uploads:
             return jsonify({'error': scope_error or 'No timestamped evidence matches this capture range.'}), 404
             
         skip_filter = request.args.get('skip_filter', 'false').lower() == 'true'
-        try:
-            total_stats = {
-                'packet_count': 0, 'flow_count': 0, 'whatsapp_count': 0,
-                'bypass_mode': skip_filter,
-                'total_raw_packets': 0,
-            }
-            errors = []
-            for upload in uploads:
-                upload_id = upload['upload_id']
-                try:
-                    if upload.get('file_format') == 'json':
-                        from src.importers.json_importer import process_json_to_whatsapp_packets
-                        stats, packets, _ = process_json_to_whatsapp_packets(upload['stored_path'])
-                    elif upload.get('file_format') == 'csv':
-                        from src.importers.csv_importer import process_csv_to_whatsapp_packets
-                        stats, packets, _ = process_csv_to_whatsapp_packets(upload['stored_path'])
-                    else:
-                        stats, packets, _ = process_pcap_to_whatsapp_packets(upload['stored_path'], keep_all_traffic=skip_filter)
-                    # A bypass is a review mode, not derived filtered evidence.
-                    if skip_filter:
-                        remove_filtered_evidence(upload, status='bypass_no_output')
-                        clear_upload_packets(upload_id)
-                    elif upload.get('file_format') in ('json', 'csv'):
-                        update_filtered_evidence(upload_id, status='filter_error')
-                        clear_upload_packets(upload_id)
-                    else:
-                        packet_numbers = {int(p['packet_no']) for p in packets if p.get('packet_no') is not None}
-                        destination = _filtered_path(upload_id, upload['filename'], upload.get('file_format'))
-                        if os.path.exists(destination):
-                            os.remove(destination)
-                        written = write_filtered_capture(upload['stored_path'], destination, packet_numbers, upload.get('file_format'), stats.get('packet_count'))
-                        if written:
-                            update_filtered_evidence(upload_id, destination, upload.get('file_format'), written, 'filtered_output_created')
-                        else:
-                            update_filtered_evidence(upload_id, status='no_whatsapp_match')
-                            clear_upload_packets(upload_id)
-                        
-                    # Only a validated, materialized filtered output is eligible for analysis indexing.
-                    if not skip_filter and packets and upload.get('file_format') not in ('json', 'csv') and os.path.isfile(destination):
-                        insert_whatsapp_packets(upload_id, upload_id, upload['filename'], packets)
-                    update_status(upload_id, 'filtered')
-                    
-                    total_stats['packet_count'] += stats.get('packet_count', 0)
-                    total_stats['total_raw_packets'] += stats.get('total_raw_packets', stats.get('packet_count', 0))
-                    total_stats['flow_count'] += stats.get('flow_count', 0)
-                    total_stats['whatsapp_count'] += stats.get('whatsapp_count', 0)
-                    total_stats['detected_os'] = stats.get('detected_os', 'unknown')
-                except Exception as file_err:
-                    update_status(upload_id, 'error')
-                    errors.append(f"{upload['filename']}: {str(file_err)}")
-
-            if total_stats['packet_count'] == 0 and errors:
-                return jsonify({'error': f"Failed to filter files: {'; '.join(errors)}"}), 400
-
-            return jsonify({**total_stats, 'scope': {'start_ts': start_ts, 'end_ts': end_ts,
-                            'file_count': len(uploads), 'default_scope': default_scope}, 'errors': errors})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
+        
+        from src.webapp.job_queue import enqueue_filter_job
+        job_id = enqueue_filter_job([u['upload_id'] for u in uploads], skip_filter=skip_filter)
+        
+        return jsonify({
+            'job_id': job_id,
+            'scope': {'start_ts': start_ts, 'end_ts': end_ts, 'file_count': len(uploads), 'default_scope': default_scope}
+        })
+        
+    @app.route('/api/jobs/<job_id>', methods=['GET'])
+    def api_job_status(job_id):
+        from src.webapp.job_queue import get_job_status
+        status = get_job_status(job_id)
+        if not status:
+            return jsonify({'error': 'Job not found'}), 404
+        return jsonify(status)
 
     @app.route('/api/analyze', methods=['POST'])
     def api_analyze_scope():

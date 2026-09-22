@@ -8,3 +8,4 @@ venv/
 .venv_win/
 check.py
 rewrite_app.py
+*.pcap

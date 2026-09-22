@@ -12,6 +12,7 @@ Level 5: Temporal burst partitioning — 1-second gap threshold
 
 import os
 import sys
+import json
 from collections import defaultdict, Counter
 from typing import Dict, Any, List, Tuple, Optional
 
@@ -75,6 +76,38 @@ def classify_party_type(
     if remote_port in p2p_ports or media_guess in ('voice_call', 'video_call', 'call_signaling'):
         return 'peer_to_peer'
     return 'unknown'
+
+def _extract_party_crypto(pkts_sorted: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Walk packets for this party and find the most informative TLS/QUIC handshake.
+    Priority: client_hello > server_hello > quic_only > none
+    """
+    best = None
+    for p in pkts_sorted:
+        info_raw = p.get('tls_crypto_info')
+        if not info_raw:
+            continue
+        try:
+            info = json.loads(info_raw)
+        except Exception:
+            continue
+        if best is None or info.get('type') == 'client_hello':
+            best = info
+            if info.get('type') == 'client_hello':
+                break  # ClientHello is the richest source
+    
+    # QUIC-only fallback
+    quic_versions = [p.get('quic_version') for p in pkts_sorted if p.get('quic_version')]
+    
+    if best is None and not quic_versions:
+        return None
+    
+    return {
+        'tls': best,
+        'quic_version': quic_versions[0] if quic_versions else None,
+        'pqc_detected': best.get('pqc', False) if best else False,
+        'transport': 'QUIC' if quic_versions else ('TLS' if best else 'unknown'),
+    }
 
 
 def group_into_entities(
@@ -184,6 +217,34 @@ def group_into_entities(
             is_p2p = True
 
         party_id = f"{upload_id}_{traffic_class}_{remote_ip}_{remote_port}_{protocol}"
+        
+        crypto_summary = _extract_party_crypto(pkts_sorted)
+
+        call_media_types = {'voice_call', 'video_call', 'call_stream_unresolved'}
+        call_pkts = [
+            p for p in pkts_sorted
+            if (p.get('whatsapp_media_guess') or '') in call_media_types
+        ]
+
+        if call_pkts:
+            call_ts = sorted(p['timestamp'] for p in call_pkts if p.get('timestamp'))
+            # Group into call windows using 10s gap (shorter than the 60s session gap)
+            call_windows = []
+            if call_ts:
+                window_start = call_ts[0]
+                window_end   = call_ts[0]
+                for ts in call_ts[1:]:
+                    if ts - window_end > 10.0:
+                        call_windows.append(window_end - window_start)
+                        window_start = ts
+                    window_end = ts
+                call_windows.append(window_end - window_start)
+            call_duration_s = sum(call_windows)
+            longest_call_s  = max(call_windows) if call_windows else 0.0
+        else:
+            call_duration_s = 0.0
+            longest_call_s  = 0.0
+            call_windows = []
 
         parties.append({
             'party_id':     party_id,
@@ -209,6 +270,10 @@ def group_into_entities(
             'media_breakdown': media_breakdown,
             'source_file': source_file,
             'source_files': source_files,
+            'crypto_summary': crypto_summary,
+            'call_duration_s': call_duration_s,
+            'longest_call_s': longest_call_s,
+            'call_window_count': len(call_windows) if call_pkts else 0,
         })
 
     return sorted(parties, key=lambda p: p['packet_count'], reverse=True)
