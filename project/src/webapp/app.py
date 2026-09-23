@@ -2,6 +2,7 @@ import os
 import shutil
 from datetime import datetime, time, timezone, timedelta
 from flask import Flask, render_template, request, redirect, url_for, jsonify, send_file, abort
+from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
 import sys
 
@@ -102,6 +103,25 @@ def classify_ip_presentation(party):
 
 def create_app():
     app = Flask(__name__)
+    # This switch affects only the Interface 1 browser workflow.  Keeping the
+    # legacy uploader intact makes an operational rollback a config change.
+    app.config['LARGE_BATCH_UPLOAD_ENABLED'] = os.environ.get(
+        'WA_LARGE_BATCH_UPLOAD_ENABLED', 'true'
+    ).strip().lower() not in ('0', 'false', 'no', 'off')
+
+    @app.errorhandler(HTTPException)
+    def api_http_error_response(error):
+        """Keep API request rejections machine-readable without changing pages."""
+        if request.path.startswith('/api/'):
+            return jsonify({'error': error.description}), error.code
+        return error
+
+    @app.errorhandler(500)
+    def api_server_error_response(error):
+        if request.path.startswith('/api/'):
+            app.logger.exception('Unhandled API error', exc_info=error)
+            return jsonify({'error': 'Unexpected server error.'}), 500
+        return error
     
     # Init databases
     init_registry_db()
@@ -141,9 +161,25 @@ def create_app():
         return os.path.join(app.config['FILTERED_PCAP_FOLDER'], upload_id, f'{stem}_WF{extension}')
 
     def _scope():
+        job_id = request.args.get('job_id', '').strip()
+        if job_id:
+            from src.webapp.job_queue import get_job_status
+            job = get_job_status(job_id)
+            job_upload_ids = job.get('upload_ids') if job else None
+            if not isinstance(job_upload_ids, list):
+                return None, None, 'The requested processing-job scope is unavailable.', [], False
+            uploads = [item for item in (get_upload(upload_id) for upload_id in job_upload_ids)
+                       if item and item.get('stored_path')]
+            if not uploads:
+                return None, None, 'The requested processing job has no available evidence.', [], False
+            scoped_starts = [item.get('capture_start_ts') for item in uploads if item.get('capture_start_ts') is not None]
+            scoped_ends = [item.get('capture_end_ts') for item in uploads if item.get('capture_end_ts') is not None]
+            start = min(scoped_starts) if scoped_starts else None
+            end = (max(scoped_ends) + 0.000001) if scoped_ends else None
+            return start, end, None, uploads, False
+
         requested_ids = [value for value in request.args.get('upload_ids', '').split(',') if value]
         if requested_ids:
-            from src.webapp.db_registry import get_upload
             uploads = [item for item in (get_upload(upload_id) for upload_id in requested_ids) if item and item.get('stored_path')]
             if uploads:
                 scoped_starts = [item.get('capture_start_ts') for item in uploads if item.get('capture_start_ts') is not None]
@@ -480,7 +516,8 @@ def create_app():
         return render_template('interface1.html', 
                                active_interface=1, 
                                uploads=uploads,
-                               error=error)
+                               error=error,
+                               large_batch_upload_enabled=app.config['LARGE_BATCH_UPLOAD_ENABLED'])
 
     @app.route('/interface/2')
     def interface2():

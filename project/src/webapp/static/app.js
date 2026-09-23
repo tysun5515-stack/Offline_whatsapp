@@ -152,7 +152,7 @@ const btnClearFiles = document.getElementById('btn-clear-files');
 const btnRegisterOnly = document.getElementById('btn-register-only');
 let selectedFiles = [];
 
-if (dropZone && fileInput) {
+if (dropZone && fileInput && !window.WA_LARGE_BATCH_UPLOAD_ENABLED) {
   // Sync accept attribute based on toggle
   function syncAcceptFilter() {
     if (!fileInput) return;
@@ -373,7 +373,7 @@ if (compareBtn) {
   const fmt = (v) => v == null ? '-' : new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(Number(v)*1000)) + ' IST';
   const label = (value) => ({voice_call:'Voice Call',video_call:'Video Call',call_signaling:'Call Signaling',call_media_candidate:'Call Stream',chat_signaling:'Chat Signaling',message:'Chat Message',photo:'Photo Transfer',video:'Video Transfer',audio:'Voice Note / Audio',dns:'DNS Lookup'})[value] || (value || 'Unclassified').replace(/_/g,' ');
   const range = () => { const p=new URLSearchParams(location.search); return {from:p.get('capture_from'),to:p.get('capture_to')}; };
-  function url(path) { const u=new URL(path, location.origin), r=range(); if(r.from)u.searchParams.set('capture_from',r.from); if(r.to)u.searchParams.set('capture_to',r.to); return u; }
+  function url(path) { const u=new URL(path, location.origin), r=range(), jobId=new URLSearchParams(location.search).get('job_id'); if(r.from)u.searchParams.set('capture_from',r.from); if(r.to)u.searchParams.set('capture_to',r.to); if(jobId)u.searchParams.set('job_id',jobId); return u; }
   function persist() { const u=new URL(location.href); u.searchParams.set('view',view); if(view==='file'&&selectedUploadId)u.searchParams.set('upload_id',selectedUploadId); else u.searchParams.delete('upload_id'); if(query)u.searchParams.set('q',query);else u.searchParams.delete('q'); if(confidence!=='all')u.searchParams.set('confidence',confidence);else u.searchParams.delete('confidence'); if(protocol!=='all')u.searchParams.set('protocol',protocol);else u.searchParams.delete('protocol'); u.searchParams.set('page',currentPage); if(selectedPacketId)u.searchParams.set('packet',selectedPacketId);else u.searchParams.delete('packet'); history.replaceState(null,'',u); }
   function setActive() { fileItems.forEach(x=>x.classList.toggle('is-active',x.dataset.view===view && (view==='all'||x.dataset.uploadId===selectedUploadId))); }
   function resetDetail() { $('detail-empty-state').classList.remove('hidden'); $('detail-active-content').classList.add('hidden'); $('detail-error').classList.add('hidden'); }

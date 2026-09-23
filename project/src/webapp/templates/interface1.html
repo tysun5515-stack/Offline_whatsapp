@@ -3,6 +3,8 @@
 
 {% block dashboard %}
 
+<script>window.WA_LARGE_BATCH_UPLOAD_ENABLED = {{ 'true' if large_batch_upload_enabled else 'false' }};</script>
+
 <!-- Page header -->
 <div class="mb-6">
   <div class="flex items-center text-xs text-gray-500 mb-1">
@@ -182,4 +184,8 @@
 </div>
 {% endif %}
 
+{% endblock %}
+
+{% block extra_scripts %}
+{% if large_batch_upload_enabled %}<script src="{{ url_for('static', filename='large_batch_upload.js') }}"></script>{% endif %}
 {% endblock %}

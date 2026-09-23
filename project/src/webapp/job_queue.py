@@ -43,7 +43,11 @@ def enqueue_filter_job(upload_ids: List[str], skip_filter: bool = False) -> str:
         'progress_pct': 0.0,
         'total_files': len(upload_ids),
         'processed_files': 0,
+        # Optional, persisted scope for result pages.  Existing job files do
+        # not need this field and remain readable.
+        'upload_ids': list(upload_ids),
         'errors': [],
+        'outcomes': [],
         'stats': {
             'packet_count': 0,
             'flow_count': 0,
@@ -63,6 +67,18 @@ def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
     return _read_job(job_id)
 
 def _process_filter_job(job_id: str, upload_ids: List[str], skip_filter: bool):
+    """Run the worker and leave a durable terminal state on worker failure."""
+    try:
+        _process_filter_job_inner(job_id, upload_ids, skip_filter)
+    except Exception as exc:
+        job_data = _read_job(job_id)
+        if job_data:
+            job_data['status'] = 'failed'
+            job_data.setdefault('errors', []).append(f'Job worker failed: {exc}')
+            _write_job(job_id, job_data)
+
+
+def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: bool):
     from src.webapp.db_registry import get_upload, update_filtered_evidence, remove_filtered_evidence, update_status
     from src.webapp.db_analysis import insert_whatsapp_packets, clear_upload_packets
     from src.pipeline import process_pcap_to_whatsapp_packets
@@ -87,7 +103,11 @@ def _process_filter_job(job_id: str, upload_ids: List[str], skip_filter: bool):
         upload = get_upload(upload_id)
         if not upload:
             job_data['errors'].append(f"Upload {upload_id} not found.")
+            job_data.setdefault('outcomes', []).append({
+                'upload_id': upload_id, 'status': 'missing_upload'
+            })
             job_data['processed_files'] += 1
+            job_data['progress_pct'] = round((job_data['processed_files'] / job_data['total_files']) * 100, 1) if job_data['total_files'] else 100.0
             _write_job(job_id, job_data)
             continue
             
@@ -123,6 +143,13 @@ def _process_filter_job(job_id: str, upload_ids: List[str], skip_filter: bool):
                 insert_whatsapp_packets(upload_id, upload_id, upload['filename'], packets)
             
             update_status(upload_id, 'filtered')
+            job_data.setdefault('outcomes', []).append({
+                'upload_id': upload_id,
+                'filename': upload['filename'],
+                'status': ('bypass_no_output' if skip_filter else
+                           'filter_error' if upload.get('file_format') in ('json', 'csv') else
+                           'filtered_output_created' if written else 'no_whatsapp_match')
+            })
             
             # Update stats
             job_data['stats']['packet_count'] += stats.get('packet_count', 0)
@@ -133,11 +160,14 @@ def _process_filter_job(job_id: str, upload_ids: List[str], skip_filter: bool):
         except Exception as e:
             update_status(upload_id, 'error')
             job_data['errors'].append(f"{upload['filename']}: {str(e)}")
+            job_data.setdefault('outcomes', []).append({
+                'upload_id': upload_id, 'filename': upload['filename'], 'status': 'error', 'error': str(e)
+            })
             
         job_data['processed_files'] += 1
-        job_data['progress_pct'] = round((job_data['processed_files'] / job_data['total_files']) * 100, 1)
+        job_data['progress_pct'] = round((job_data['processed_files'] / job_data['total_files']) * 100, 1) if job_data['total_files'] else 100.0
         _write_job(job_id, job_data)
         
-    job_data['status'] = 'completed'
+    job_data['status'] = 'completed_with_errors' if job_data['errors'] else 'completed'
     job_data['progress_pct'] = 100.0
     _write_job(job_id, job_data)
