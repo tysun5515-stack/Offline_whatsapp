@@ -35,7 +35,8 @@ def init_registry_db() -> None:
     """)
     for col in ('file_format TEXT', 'batch_id TEXT', 'capture_start_ts REAL', 'capture_end_ts REAL',
                 'capture_packet_count INTEGER', 'capture_duration_s REAL', 'timestamp_precision TEXT',
-                'link_types TEXT', 'filtered_path TEXT', 'filtered_sha256 TEXT', 'filtered_size_bytes INTEGER',
+                'link_types TEXT', 'capture_vantage TEXT', 'subscriber_ips TEXT',
+                'filtered_path TEXT', 'filtered_sha256 TEXT', 'filtered_size_bytes INTEGER',
                 'filtered_created_at TEXT', 'filtered_format TEXT', 'filtered_packet_count INTEGER', 'filtered_status TEXT'):
         _add_column(conn, col)
     conn.execute('CREATE INDEX IF NOT EXISTS idx_uploads_batch_capture ON pcap_uploads(batch_id, capture_start_ts)')
@@ -79,13 +80,16 @@ def register_upload(filename: str, stored_path: str, file_format: str = 'pcap',
               'file_format': file_format, 'batch_id': batch_id, 'is_duplicate': False,
               'capture_start_ts': metadata.get('capture_start_ts'), 'capture_end_ts': metadata.get('capture_end_ts'),
               'capture_packet_count': metadata.get('capture_packet_count'), 'capture_duration_s': metadata.get('capture_duration_s'),
-              'timestamp_precision': metadata.get('timestamp_precision'), 'link_types': metadata.get('link_types')}
+              'timestamp_precision': metadata.get('timestamp_precision'), 'link_types': metadata.get('link_types'),
+              'capture_vantage': metadata.get('capture_vantage'), 'subscriber_ips': metadata.get('subscriber_ips')}
     conn = _connect()
     conn.execute("""INSERT INTO pcap_uploads
         (upload_id, filename, stored_path, sha256_hash, size_bytes, uploaded_at, status, file_format, batch_id,
-         capture_start_ts, capture_end_ts, capture_packet_count, capture_duration_s, timestamp_precision, link_types)
+         capture_start_ts, capture_end_ts, capture_packet_count, capture_duration_s, timestamp_precision, link_types,
+         capture_vantage, subscriber_ips)
         VALUES (:upload_id,:filename,:stored_path,:sha256_hash,:size_bytes,:uploaded_at,:status,:file_format,:batch_id,
-                :capture_start_ts,:capture_end_ts,:capture_packet_count,:capture_duration_s,:timestamp_precision,:link_types)""", result)
+                :capture_start_ts,:capture_end_ts,:capture_packet_count,:capture_duration_s,:timestamp_precision,:link_types,
+                :capture_vantage,:subscriber_ips)""", result)
     conn.commit(); conn.close()
     return result
 

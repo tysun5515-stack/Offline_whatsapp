@@ -25,13 +25,24 @@ from src.webapp.forensic_evidence import build_evidence_trail
 from src.pipeline import process_pcap_to_whatsapp_packets
 from src.capture_evidence import capture_metadata, write_filtered_capture
 from src.party_grouper import group_into_entities
+from src.session_engine import reconstruct_flow_sessions, attach_session_metrics
 from src.geolocation import geolocate, reverse_dns
 from src.geo_plot import generate_map_html
 from src.geo_mapping import classify_remote_party
+from src.geo_enrichment import enrich_parties
 
 # India has no daylight-saving transitions, so a fixed offset avoids requiring
 # the optional ``tzdata`` package on Windows Python installations.
 IST = timezone(timedelta(hours=5, minutes=30), name='IST')
+
+
+def _derive_parties_and_sessions(packets, scope_id, os_hint='unknown'):
+    parties = group_into_entities(packets, scope_id, os_hint)
+    sessions = reconstruct_flow_sessions(packets, parties)
+    attach_session_metrics(parties, sessions)
+    return parties, sessions
+
+
 
 
 def capture_range_from_request():
@@ -99,6 +110,40 @@ def classify_ip_presentation(party):
         }
         return label, 'server', descriptions[label]
     return 'Server (General)', 'server', 'Identified server interaction without a more precise purpose.'
+
+
+# ---------------------------------------------------------------------------
+# UI label map (Fix G/H/interface3.html requirement)
+# Maps internal pipeline labels → analyst-facing display strings.
+# call_stream_unresolved: kept as a valid forensic state per strategic
+#   alignment; displayed with an 'Encrypted Call (Unanchored)' badge so
+#   analysts know call-like traffic was observed but cannot be
+#   cryptographically confirmed without a STUN cookie anchor.
+# media_transfer: unified label for mmi*/mms* CDN flows (Fix C).
+# xmpp_multiplex: FunXMPP TCP 5222 carries chat + call setup (Fix F).
+# ---------------------------------------------------------------------------
+_MEDIA_LABEL_MAP: dict = {
+    'voice_call'            : 'Voice Call',
+    'video_call'            : 'Video Call',
+    'call_stream_unresolved': 'Encrypted Call (Unanchored)',
+    'call_signaling'        : 'Call Signaling',
+    'media_transfer'        : 'Media Attachment',
+    'photo'                 : 'Photo',
+    'audio'                 : 'Audio / Voice Note',
+    'video'                 : 'Video',
+    'message'               : 'Text Message',
+    'dns'                   : 'DNS',
+    'xmpp_multiplex'        : 'Chat / Call Signal',
+    'unclassified'          : 'Unclassified',
+}
+
+
+def _media_display(raw_label: str) -> str:
+    """Convert an internal pipeline label to a human-readable UI string.
+    Falls back to capitalizing the raw label for any unlisted value."""
+    if not raw_label:
+        return '—'
+    return _MEDIA_LABEL_MAP.get(raw_label, raw_label.replace('_', ' ').title())
 
 
 def create_app():
@@ -256,7 +301,7 @@ def create_app():
             upload_ids = [u['upload_id'] for u in uploads]
             packets = get_packets(None, start_ts, end_ts, upload_ids=upload_ids)
             # Persisted parties are full-case evidence. Range views are derived in memory.
-            parties = group_into_entities(packets, 'evidence-scope', 'unknown')
+            parties, _sessions = _derive_parties_and_sessions(packets, 'evidence-scope', 'unknown')
             b_metrics = None
 
             if packets:
@@ -315,18 +360,28 @@ def create_app():
                 protocol_dist = dict(proto_counts)
 
                 # ── Media / traffic type distribution ────────────
+                # Exact-label bucketing: new pipeline values (media_transfer,
+                # xmpp_multiplex, call_stream_unresolved) are correctly placed
+                # instead of falling through to 'Other' via substring checks.
+                _VOIP_LABELS_DB = frozenset({
+                    'voice_call', 'video_call', 'call_stream_unresolved',
+                    'call_signaling', 'call_media_candidate',
+                })
+                _MEDIA_LABELS_DB = frozenset({
+                    'video', 'photo', 'audio', 'media_transfer',
+                })
+                _CHAT_LABELS_DB = frozenset({
+                    'message', 'chat_control', 'xmpp_multiplex',
+                })
                 media_counts = defaultdict(int)
                 for p in packets:
                     media = p.get('whatsapp_media_guess') or p.get('sub_activity') or 'Other'
-                    # Normalise labels
                     ml = media.lower()
-                    if 'audio' in ml or 'voice' in ml or 'voip' in ml or 'call' in ml:
+                    if ml in _VOIP_LABELS_DB:
                         label = 'VoIP / Call'
-                    elif 'video' in ml:
+                    elif ml in _MEDIA_LABELS_DB:
                         label = 'Media'
-                    elif 'image' in ml or 'media' in ml or 'photo' in ml:
-                        label = 'Media'
-                    elif 'chat' in ml or 'text' in ml or 'message' in ml or 'signal' in ml:
+                    elif ml in _CHAT_LABELS_DB:
                         label = 'Chat'
                     else:
                         label = 'Other'
@@ -337,59 +392,11 @@ def create_app():
                 # ── Recent parties with geo ──────────────────────
                 party_list = []
                 country_bytes = defaultdict(int)
-                for party in parties[:10]:
-                    geo = get_geo(party['remote_ip'])
-                    if not geo:
-                        geo_new = geolocate(party['remote_ip'])
-                        if geo_new:
-                            upsert_geo(party['remote_ip'], {
-                                'country': geo_new.country,
-                                'city': geo_new.city,
-                                'latitude': geo_new.latitude,
-                                'longitude': geo_new.longitude,
-                                'asn': geo_new.asn,
-                                'asn_org': geo_new.asn_org,
-                                'rdns_hostname': '__RDNS_NONE__'
-                            })
-                            geo = get_geo(party['remote_ip'])
-                    row = dict(party)
-                    # Bug 5 fix: classify the remote party so caveats show up accurately in dashboard
-                    classification = classify_remote_party(
-                        src_ip=party['remote_ip'],
-                        asn_number=geo.get('asn') if geo else None,
-                        asn_org=geo.get('asn_org') if geo else None,
-                        party_type=party.get('party_type', 'unknown'),
-                        port=party.get('remote_port'),
-                        protocol=party.get('protocol')
-                    )
-                    row['caveat'] = classification.get('caveat_label')
-                    row['caveat_type'] = classification.get('caveat_type')
-                    row['role_label'] = classification.get('role_label')
-                    
-                    if geo:
-                        row['geo_country'] = geo.get('country') or '—'
-                        row['geo_city'] = geo.get('city') or '—'
-                        row['asn_org'] = geo.get('asn_org') or '—'
-                        row['asn'] = geo.get('asn') or '—'
-                        row['remote_lat'] = geo.get('latitude')
-                        row['remote_lon'] = geo.get('longitude')
-                        row['latitude'] = geo.get('latitude')
-                        row['longitude'] = geo.get('longitude')
-                        country = geo.get('country') or 'Unknown'
-                        country_bytes[country] += party.get('total_bytes', 0)
-                    else:
-                        row.update({'geo_country': '—', 'geo_city': '—',
-                                    'asn_org': '—', 'asn': '—',
-                                    'remote_lat': None, 'remote_lon': None,
-                                    'latitude': None, 'longitude': None})
-                    
-                    if row.get('public_local_ip'):
-                        loc_geo = get_geo(row['public_local_ip'])
-                        if loc_geo:
-                            row['local_lat'] = loc_geo.get('latitude')
-                            row['local_lon'] = loc_geo.get('longitude')
-                            row['local_geo_city'] = loc_geo.get('city')
-                            row['local_geo_country'] = loc_geo.get('country')
+                enriched_parties = enrich_parties([dict(p) for p in parties[:10]], get_geo, upsert_geo)
+                for row in enriched_parties:
+                    country = row.get('geo_country')
+                    if country and country != '—':
+                        country_bytes[country] += row.get('total_bytes', 0)
 
                     party_list.append(row)
                 recent_parties = party_list[:5]
@@ -559,117 +566,17 @@ def create_app():
         if uploads and any(u['status'] in ('filtered', 'analyzed') for u in uploads):
             upload_ids = [u['upload_id'] for u in uploads]
             packets = get_packets(None, start_ts, end_ts, upload_ids=upload_ids)
-            parties_data = group_into_entities(packets, 'evidence-scope', 'unknown')
+            parties_data, _map_sessions = _derive_parties_and_sessions(packets, 'evidence-scope', 'unknown')
+            parties_data = enrich_parties(parties_data, get_geo, upsert_geo)
             for p in parties_data:
-                geo = get_geo(p['remote_ip'])
-                if not geo:
-                    geo_new = geolocate(p['remote_ip'])
-                    if geo_new:
-                        upsert_geo(p['remote_ip'], {
-                            'country': geo_new.country,
-                            'city': geo_new.city,
-                            'latitude': geo_new.latitude,
-                            'longitude': geo_new.longitude,
-                            'asn': geo_new.asn,
-                            'asn_org': geo_new.asn_org,
-                            'rdns_hostname': '__RDNS_NONE__'
-                        })
-                        geo = get_geo(p['remote_ip'])
-
-                if geo:
-                    p['remote_lat'] = geo.get('latitude')
-                    p['remote_lon'] = geo.get('longitude')
-                    p['geo_country'] = geo.get('country')
-                    p['geo_city'] = geo.get('city')
-                    p['asn_org'] = geo.get('asn_org')
-                    p['rdns'] = geo.get('rdns_hostname')
-                
-                import ipaddress as _ipaddress
-                loc_ip_to_use = p.get('public_local_ip')
-                
-                if not loc_ip_to_use:
-                    for candidate in (p.get('local_ips') or '').split(','):
-                        candidate = candidate.strip()
-                        if not candidate:
-                            continue
-                        try:
-                            ip_obj = _ipaddress.ip_address(candidate)
-                            if not ip_obj.is_private and not ip_obj.is_loopback and not ip_obj.is_link_local:
-                                loc_ip_to_use = candidate
-                                break
-                        except ValueError:
-                            continue
-                
-                if loc_ip_to_use:
-                    loc_ip = loc_ip_to_use
-                    loc_geo = get_geo(loc_ip)
-                    if not loc_geo:
-                        loc_geo_new = geolocate(loc_ip)
-                        if loc_geo_new:
-                            upsert_geo(loc_ip, {
-                                'country': loc_geo_new.country,
-                                'city': loc_geo_new.city,
-                                'latitude': loc_geo_new.latitude,
-                                'longitude': loc_geo_new.longitude,
-                                'asn': loc_geo_new.asn,
-                                'asn_org': loc_geo_new.asn_org,
-                                'rdns_hostname': '__RDNS_NONE__'
-                            })
-                            loc_geo = get_geo(loc_ip)
-                    
-                    if loc_geo:
-                        p['local_lat'] = loc_geo.get('latitude')
-                        p['local_lon'] = loc_geo.get('longitude')
-                        p['local_geo_country'] = loc_geo.get('country')
-                        p['local_geo_city'] = loc_geo.get('city')
-                
-                # We need asn to pass to classify_remote_party, which is available in geo as well
-                asn = geo.get('asn') if geo else None
-                
-                if p.get('traffic_class') == 'unclassified':
-                    cls_info = {
-                        'caveat_type': 'unclassified',
-                        'role_label': 'Unclassified endpoint',
-                        'is_server': False,
-                        'location_reliable': True,
-                        'caveat_label': 'Retained by WA Filter Bypass; no WhatsApp-specific role assigned.',
-                    }
-                else:
-                    cls_info = classify_remote_party(
-                        src_ip=p['remote_ip'],
-                        asn_number=asn,
-                        asn_org=p.get('asn_org'),
-                        party_type=p.get('party_type', 'unknown'),
-                        port=p.get('remote_port'),
-                        protocol=p.get('protocol')
-                    )
-                
-                p['caveat_type'] = cls_info['caveat_type']
-                p['role_label'] = cls_info['role_label']
-                p['is_server'] = cls_info['is_server']
-                p['location_reliable'] = cls_info['location_reliable']
-                p['caveat_label'] = cls_info['caveat_label']
-                p['caveat'] = cls_info['caveat_label'] # Keep caveat for backward compatibility if needed in templates
-
-                # Bug 2 fix: Ensure is_p2p relies on geo_mapping result rather than basic port fallback
-                if cls_info['role_label'] == 'Direct Peer':
-                    p['is_p2p'] = 1
-                elif cls_info['caveat_type'] == 'relay_server':
-                    p['is_p2p'] = 0
-
                 p['ip_classification'], p['ip_class_group'], p['ip_classification_description'] = classify_ip_presentation(p)
-
-                if p['caveat_type'] in ('vpn_exit', 'cgnat', 'private'):
+                if p.get('caveat_type') in ('vpn_exit', 'cgnat', 'private'):
                     caveated_count += 1
-                    
-                if p['protocol'] == 'TCP':
+                if p.get('protocol') == 'TCP':
                     if p.get('session_start_confirmed'):
                         p['protocol_aware_session_label'] = 'full_session'
                     else:
                         p['protocol_aware_session_label'] = 'mid_session'
-                else:
-                    p['protocol_aware_session_label'] = 'stateless_udp'
-                    
             selected_files = request.args.getlist('files')
             
             if selected_files:
@@ -724,104 +631,32 @@ def create_app():
             arcs_list = []
 
             # ── Per-file source device geo-positioning ─────────────────────────
-            # Identify the capturing device IP per file using port heuristics.
-            # WhatsApp always uses well-known server ports on the server side;
-            # the opposite endpoint is the capture device (client).
-            import ipaddress as _ipaddress
-            _WA_SERVER_PORTS = {443, 80, 5222, 5223, 5228, 4244, 5242, 3478}
-
-            # Walk raw packets to find client IP per filename
-            _file_client_ip = {}   # fname -> best client IP string
-            _file_client_cnt = {}  # fname -> vote count for that IP
-            for _pkt in packets:
-                _fn = _pkt.get('filename')
-                if not _fn:
-                    continue
-                _sp = _pkt.get('src_port') or 0
-                _dp = _pkt.get('dst_port') or 0
-                _sip = _pkt.get('src_ip', '')
-                _dip = _pkt.get('dst_ip', '')
-                # Determine client side from port direction
-                if _sp in _WA_SERVER_PORTS and _dp not in _WA_SERVER_PORTS:
-                    _cip = _dip  # dst is client
-                elif _dp in _WA_SERVER_PORTS and _sp not in _WA_SERVER_PORTS:
-                    _cip = _sip  # src is client
-                else:
-                    _cip = _sip  # fallback
-                if not _cip:
-                    continue
-                _prev_cnt = _file_client_cnt.get(_fn, 0)
-                _new_vote = _file_client_cnt.get(_fn + '|' + _cip, 0) + 1
-                _file_client_cnt[_fn + '|' + _cip] = _new_vote
-                if _new_vote > _prev_cnt:
-                    _file_client_cnt[_fn] = _new_vote
-                    _file_client_ip[_fn] = _cip
-
-            # Now compute SVG (x, y) position for each file's source device
-            # SVG space: width=1000, height=500 (Mercator-ish equirectangular)
-            _SVG_W, _SVG_H = 1000.0, 500.0
-            _DEFAULT_SRC_X, _DEFAULT_SRC_Y = 520.0, 185.0  # private/NAT anchor
-
-            # Group files by resolved location so we can jitter stacked nodes
-            _pos_groups = {}  # (round_x, round_y) -> [fnames]
-
+            # Endpoint-pair parties own map endpoints. Do not infer a capture
+            # device or invent geographic coordinates from packet direction.
+            _file_client_ip = {}
             per_file_source_positions = {}
-            file_names = list(file_name_to_idx.keys())
-            n_files = len(file_names)
 
-            for fname in file_names:
-                client_ip = _file_client_ip.get(fname)
-                sx, sy = _DEFAULT_SRC_X, _DEFAULT_SRC_Y
-                if client_ip:
-                    try:
-                        _iobj = _ipaddress.ip_address(client_ip)
-                        if not _iobj.is_private and not _iobj.is_loopback:
-                            _cgeo = get_geo(client_ip)
-                            if not _cgeo:
-                                try:
-                                    _gnew = geolocate(client_ip)
-                                    if _gnew:
-                                        upsert_geo(client_ip, {
-                                            'country': _gnew.country,
-                                            'city': _gnew.city,
-                                            'latitude': _gnew.latitude,
-                                            'longitude': _gnew.longitude,
-                                            'asn': _gnew.asn,
-                                            'asn_org': _gnew.asn_org,
-                                            'rdns_hostname': '__RDNS_NONE__'
-                                        })
-                                        _cgeo = get_geo(client_ip)
-                                except Exception:
-                                    pass
-                            if _cgeo and _cgeo.get('latitude') and _cgeo.get('longitude'):
-                                _lat = _cgeo['latitude']
-                                _lon = _cgeo['longitude']
-                                sx = (_lon + 180.0) / 360.0 * _SVG_W
-                                sy = (90.0 - _lat) / 180.0 * _SVG_H
-                    except Exception:
-                        pass
-
-                # Jitter if multiple files resolve to the exact same spot
-                _rk = (round(sx / 8) * 8, round(sy / 8) * 8)
-                _grp = _pos_groups.setdefault(_rk, [])
-                _gi = len(_grp)
-                if _gi > 0:
-                    _angle = (2 * math.pi * _gi) / max(n_files, 1)
-                    sx += 14 * math.cos(_angle)
-                    sy += 14 * math.sin(_angle)
-                _grp.append(fname)
-
-                per_file_source_positions[fname] = (sx, sy)
-
-                fidx = file_name_to_idx[fname]
-                nodes_dict[f'src_{fidx}'] = {
-                    'id': f'src_{fidx}',
-                    'lbl': f'{fname}\n(Device)',
-                    'x': sx / _SVG_W,
-                    'y': sy / _SVG_H,
-                    'c': files_data[fidx]['color'],
-                    'r': 5
+            def endpoint_node(party, side, color, files):
+                ip = party.get(f'endpoint_{side}_ip') or 'Unknown endpoint'
+                if ip in nodes_dict:
+                    return nodes_dict[ip]['id']
+                scope = party.get(f'endpoint_{side}_scope') or 'non_routable'
+                lat = party.get(f'endpoint_{side}_lat')
+                lon = party.get(f'endpoint_{side}_lon')
+                geographic = scope == 'public' and lat is not None and lon is not None
+                if geographic:
+                    x, y = (lon + 180) / 360.0, (90 - lat) / 180.0
+                else:
+                    count = sum(1 for n in nodes_dict.values() if n.get('nonGeographic'))
+                    x, y = min(.95, .06 + count * .10), .96
+                node_id = f'n{len(nodes_dict)}'
+                label = {'local': 'Local endpoint', 'cgnat': 'CGNAT endpoint'}.get(scope, 'Network endpoint')
+                nodes_dict[ip] = {
+                    'id': node_id, 'lbl': f'{ip}\n{label}', 'x': x, 'y': y,
+                    'c': color, 'r': 5, 'files': files,
+                    'nonGeographic': not geographic, 'scope': scope,
                 }
+                return node_id
 
             for i, p in enumerate(parties_data):
                 try:
@@ -843,52 +678,34 @@ def create_app():
                     if b >= 1024: return f"{b/1024:.1f} KB"
                     return f"{b} B"
 
-                geo_info = get_geo(p['remote_ip'])
-                lat = geo_info.get('latitude') if geo_info else 0
-                lon = geo_info.get('longitude') if geo_info else 0
-                
-                if not lat and not lon:
-                    lat, lon = 0, -30
-                    
-                x = (lon + 180) / 360.0
-                y = (90 - lat) / 180.0
-                
                 color = files_data[file_idx]['color'] if file_idx is not None and file_idx < len(files_data) else '#888'
                 
                 pkts = p.get('packet_count', 0)
-                r = min(8, max(3, 2 + math.log10(max(1, pkts))))
-                
-                node_id = f"n{i}"
                 asn = p.get('asn_org') or 'Unknown'
-                asn_short = asn.split(' ')[0] if asn else ''
                 country = p.get('geo_country') or 'Unknown'
-                lbl = f"{p['remote_ip']}\n{country} ({asn_short})"
-                
-                nodes_dict[node_id] = {
-                    'id': node_id,
-                    'lbl': lbl,
-                    'x': x,
-                    'y': y,
-                    'c': color,
-                    'r': r
-                }
-                
+                node_a = endpoint_node(p, 'a', color, file_indices)
+                node_b = endpoint_node(p, 'b', color, file_indices)
                 arcs_list.append({
-                    'a': f'src_{file_idx}',
-                    'b': node_id,
+                    'a': node_a,
+                    'b': node_b,
                     'files': file_indices,
-                    'proto': p.get('protocol', 'UDP')
+                    'proto': p.get('protocol', 'UDP'),
+                    'aToBBytes': p.get('a_to_b_bytes', 0),
+                    'bToABytes': p.get('b_to_a_bytes', 0)
                 })
 
                 parties_json_list.append({
-                    'ip': p.get('remote_ip'),
+                    'ip': f"{p.get('endpoint_a_ip')} ↔ {p.get('endpoint_b_ip')}",
+                    'endpointA': p.get('endpoint_a_ip'),
+                    'endpointB': p.get('endpoint_b_ip'),
                     'files': file_indices,
                     'proto': p.get('protocol'),
                     'pkts': pkts,
                     'bytes': format_bytes(p.get('total_bytes', 0)),
                     'dur': p.get('duration_s', 0),
                     'role': p.get('role_label', p.get('party_type')),
-                    'activity': p.get('sub_activity') or '—',
+                    'activity': _media_display(p.get('sub_activity') or ''),
+                    'activityRaw': p.get('sub_activity') or '—',
                     'conf': p.get('confidence', '—').capitalize(),
                     'trafficClass': p.get('traffic_class', 'confirmed_whatsapp'),
                     'ipClassification': p.get('ip_classification', 'Server (General)'),
@@ -984,6 +801,8 @@ def create_app():
         file_format = _format_for_name(filename)
         try:
             metadata = capture_metadata(filepath, file_format)
+            metadata['capture_vantage'] = request.form.get('capture_vantage') or None
+            metadata['subscriber_ips'] = request.form.get('subscriber_ips') or None
             receipt = register_upload(filename, filepath, file_format=file_format, capture_metadata=metadata, upload_id=upload_id)
         except Exception as exc:
             if os.path.exists(filepath): os.remove(filepath)
@@ -1031,6 +850,8 @@ def create_app():
             file_format = _format_for_name(target_filename)
             try:
                 metadata = capture_metadata(filepath, file_format)
+                metadata['capture_vantage'] = request.form.get('capture_vantage') or None
+                metadata['subscriber_ips'] = request.form.get('subscriber_ips') or None
                 receipt = register_upload(target_filename, filepath, file_format=file_format, capture_metadata=metadata, upload_id=upload_id)
                 receipts.append(receipt)
             except Exception as exc:
@@ -1090,7 +911,8 @@ def create_app():
         upload_ids = [u['upload_id'] for u in uploads]
         packets = get_packets(None, start_ts, end_ts, upload_ids=upload_ids)
         # Entities are intentionally derived from this date scope and are not a case-level DB artifact.
-        parties = group_into_entities(packets, 'evidence-scope', 'unknown')
+        parties, sessions = _derive_parties_and_sessions(packets, 'evidence-scope', 'unknown')
+        insert_sessions('evidence-scope', sessions)
         return jsonify({'status': 'analyzed', 'scope': {'start_ts': start_ts, 'end_ts': end_ts,
                         'file_count': len(uploads), 'default_scope': default_scope},
                         'packet_count': len(packets), 'party_count': len(parties)})
@@ -1116,46 +938,10 @@ def create_app():
                 from src.os_fingerprint import detect_os_hint
                 os_hint, _ = detect_os_hint(packets)
                 
-            parties = group_into_entities(packets, batch_id, os_hint)
+            parties, sessions = _derive_parties_and_sessions(packets, batch_id, os_hint)
+            insert_sessions(batch_id, sessions)
             
-            for p in parties:
-                ip = p['remote_ip']
-                cached = get_geo(ip)
-                if not cached:
-                    geo_data = geolocate(ip)
-                    rdns = reverse_dns(ip)
-                    
-                    if geo_data:
-                        upsert_geo(ip, {
-                            'country': geo_data.country,
-                            'city': geo_data.city,
-                            'latitude': geo_data.latitude,
-                            'longitude': geo_data.longitude,
-                            'asn': geo_data.asn,
-                            'asn_org': geo_data.asn_org,
-                            'looked_up_at': 0,
-                            'rdns_hostname': rdns or '__RDNS_NONE__'
-                        })
-                    else:
-                        upsert_geo(ip, {
-                            'rdns_hostname': rdns or '__RDNS_NONE__'
-                        })
-                        
-                if p.get('public_local_ip'):
-                    loc_ip = p['public_local_ip']
-                    if not get_geo(loc_ip):
-                        loc_geo = geolocate(loc_ip)
-                        if loc_geo:
-                            upsert_geo(loc_ip, {
-                                'country': loc_geo.country,
-                                'city': loc_geo.city,
-                                'latitude': loc_geo.latitude,
-                                'longitude': loc_geo.longitude,
-                                'asn': loc_geo.asn,
-                                'asn_org': loc_geo.asn_org,
-                                'looked_up_at': 0,
-                                'rdns_hostname': reverse_dns(loc_ip) or '__RDNS_NONE__'
-                            })
+            parties = enrich_parties(parties, get_geo, upsert_geo)
                         
             insert_parties(batch_id, parties)
             for u in uploads:
@@ -1388,7 +1174,7 @@ def create_app():
         result = get_packets_paged(None, page=request.args.get('page', 1, type=int),
             per_page=request.args.get('per_page', 100, type=int), confidence=request.args.get('confidence'),
             protocol=request.args.get('protocol'), media_guess=request.args.get('media_guess'), q=request.args.get('q'),
-            start_ts=start_ts, end_ts=end_ts, upload_ids=selected_ids)
+            start_ts=start_ts, end_ts=end_ts, upload_ids=selected_ids, src_ip=request.args.get('src_ip'), dst_ip=request.args.get('dst_ip'), any_ip=request.args.get('any_ip'))
         result['selection'] = {'view': view, 'upload_id': selected_id if view == 'file' else None,
                                'filename': allowed[selected_id]['filename'] if view == 'file' else 'All Filtered Evidence'}
         result['scope'] = {'start_ts': start_ts, 'end_ts': end_ts, 'file_count': len(uploads),

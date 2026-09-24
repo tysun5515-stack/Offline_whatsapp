@@ -55,7 +55,7 @@ def classify_remote_party(
         pass
 
     if asn_number in META_ASNS:
-        if protocol == "UDP" and (port == 3478 or (port is not None and port > 1024)):
+        if protocol == "UDP" and port == 3478:
             caveat_type = "relay_server"
             role_label = "Call Relay (TURN)"
             is_server = True

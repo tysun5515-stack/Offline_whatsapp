@@ -14,7 +14,8 @@ from src.whatsapp_filter import (
     check_domain_matching, check_cidr_matching, 
     check_inference_matching, check_port_matching,
     guess_media_type, resolve_timeout, ConfirmedServerRegistry,
-    resolve_activity_labels, resolve_final_label, STRONG_DOMAINS, _domain_matches_suffix
+    resolve_activity_labels, resolve_final_label, STRONG_DOMAINS,
+    _domain_matches_suffix, is_whatsapp_anchored,
 )
 from src.os_fingerprint import detect_os_hint, OS_TIMEOUTS
 
@@ -84,11 +85,23 @@ def _emit_flow_packets(
         p["tls_crypto_info"] = p.get("tls_crypto_info")
         p["quic_version"] = p.get("quic_version")
         p["flow_id"] = str(flow["flow_id"])
+        p["flow_instance"] = flow.get("flow_instance")
+        p["capture_id"] = flow.get("pcap_id")
+        p["endpoint_a_ip"] = flow.get("endpoint_a_ip")
+        p["endpoint_a_port"] = flow.get("endpoint_a_port")
+        p["endpoint_b_ip"] = flow.get("endpoint_b_ip")
+        p["endpoint_b_port"] = flow.get("endpoint_b_port")
+        p["local_subscriber_ip"] = flow.get("local_subscriber_ip")
+        p["subscriber_resolution_source"] = flow.get("subscriber_resolution_source")
+        p["subscriber_resolution_confidence"] = flow.get("subscriber_resolution_confidence")
+        p["session_start_confirmed"] = flow.get("session_start_confirmed", False)
         all_whatsapp_packets.append(p)
 
 def process_pcap_to_whatsapp_packets(
     pcap_path: str,
     keep_all_traffic: bool = False,
+    capture_id: Optional[str] = None,
+    explicit_subscriber_ips: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Runs the core parsing and filtering pipeline.
@@ -113,9 +126,10 @@ def process_pcap_to_whatsapp_packets(
     # New signature: rebuild_flows(packet_records, pcap_id, burst_threshold, os_hint)
     flows = rebuild_flows(
         packet_records, 
-        pcap_id=os.path.basename(pcap_path),
+        pcap_id=capture_id or os.path.basename(pcap_path),
         os_hint=os_hint,
-        burst_threshold=1.0
+        burst_threshold=1.0,
+        explicit_subscriber_ips=explicit_subscriber_ips,
     )
     
     # 3. Classify flows using the established evidence rules.
@@ -181,17 +195,24 @@ def process_pcap_to_whatsapp_packets(
         flow["sni_sub_activity"] = sub_activity_domain
         flow["port_activity"] = port_activity
         
-        # Sub-classify media type with burst-aware logic
+        # Sub-classify media type with burst-aware logic.
+        # Acceptance gate (Fix 6): only run guess_media_type() for flows
+        # with a verified WhatsApp anchor. Unanchored flows are tagged
+        # 'unclassified' without reaching the media-guessing layer.
         flow_duration = (flow.get("last_seen", 0) - flow.get("first_seen", 0)) or 1.0
         cidr_confirmed = (conf_cidr == "high")
-        flow["media_type"] = guess_media_type(
-            flow["packets"], 
-            flow["protocol_type"], 
-            flow_duration,
-            sni_sub_activity=sub_activity_domain,
-            port_activity=port_activity,
-            cidr_confirmed=cidr_confirmed
-        )
+
+        if is_whatsapp_anchored(sub_activity_domain, port_activity, cidr_confirmed):
+            flow["media_type"] = guess_media_type(
+                flow["packets"],
+                flow["protocol_type"],
+                flow_duration,
+                sni_sub_activity=sub_activity_domain,
+                port_activity=port_activity,
+                cidr_confirmed=cidr_confirmed
+            )
+        else:
+            flow["media_type"] = "unclassified"
         
         # Extract packets
         is_wa_flow = flow["whatsapp_confidence"] in ["high", "medium", "infrastructure"]
@@ -200,18 +221,35 @@ def process_pcap_to_whatsapp_packets(
             
             labels = resolve_activity_labels(sub_activity_domain, port_activity, flow["protocol_type"])
             
+            # Fix F: pass sni_sub_activity so resolve_final_label can
+            # correctly handle xmpp_multiplex flows that have SNI decoration.
             final_media_guess = resolve_final_label(
-                flow["media_type"], 
-                port_activity, 
-                flow["protocol_type"]
+                flow["media_type"],
+                port_activity,
+                flow["protocol_type"],
+                sni_sub_activity=sub_activity_domain,
             )
             
             display_activity = labels.get("display_activity")
+
+            # Fix E: DNS flows emitted ONLY if they contain a WhatsApp domain
+            # query. Non-WhatsApp DNS (Google, Apple, etc.) is not WA evidence.
             if port_activity == "dns_resolution":
                 dns_queries = [p["dns_query"] for p in flow["packets"] if p.get("dns_query")]
-                from src.whatsapp_filter import STRONG_DOMAINS, _domain_matches_suffix
-                wa_queries = [q for q in dns_queries if any(_domain_matches_suffix(q, d) for d in STRONG_DOMAINS)]
+                wa_queries = [q for q in dns_queries
+                              if any(_domain_matches_suffix(q, d) for d in STRONG_DOMAINS)]
+                if not wa_queries and not keep_all_traffic:
+                    # Not a WhatsApp DNS query — skip emission entirely
+                    continue
                 display_activity = f"dns→{wa_queries[0]}" if wa_queries else "dns_resolution"
+
+            # Fix H: strip transient internal state labels before DB write.
+            # 'call_media_candidate' is a port-heuristic hint, not a
+            # classification verdict. Analysts must never see it in reports.
+            if display_activity == "call_media_candidate":
+                display_activity = "call_signaling"
+            if final_media_guess == "call_media_candidate":
+                final_media_guess = "call_signaling"
             
             _emit_flow_packets(
                 flow,

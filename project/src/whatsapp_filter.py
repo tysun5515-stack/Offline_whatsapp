@@ -16,29 +16,31 @@ Parameter sources:
     gated behind a real validation-report check (see
     `_voip_thresholds_validated()` below), not a hand-editable constant.
 
-Fix log (this revision):
+Fix log (this revision — permanent fix pass):
   1. VoIP-validation gate is now read from a validation report file on
-     disk, produced only by scripts/validate_against_labels.py - it can
-     no longer be silently flipped to True by hand-editing a constant.
-  2. Burst intensity is now computed per-burst (bytes / that burst's own
-     duration), not per-flow - the previous version divided one burst's
-     bytes by the whole flow's duration, which made the 50_000/30s
-     thresholds behave inconsistently depending on unrelated flow length.
-  3. CONFIRMED_WHATSAPP_SERVERS is no longer a module-level global. It's
-     a `ConfirmedServerRegistry` instance, scoped per pcap_id/upload_id,
-     passed explicitly into the functions that need it. A global shared
-     across every upload in a long-running process meant one case's
-     evidence silently leaked into an unrelated case's confidence score.
-     ** CALLER CHANGE REQUIRED: see the migration note above the class. **
-  4. Domain matching now checks label boundaries
-     (`domain == suffix or domain.endswith("." + suffix)`), not a bare
-     `str.endswith()`, which previously matched "evilwhatsapp.net"
-     against the suffix "whatsapp.net".
-  5. SNI-derived sub-activity and port-derived activity are kept in
-     clearly separate, namespaced fields (`sni_sub_activity` /
-     `port_activity`) instead of being merged into one ambiguous field -
-     they are different-strength signals from different evidence and a
-     forensic tool should never blur which one produced a given label.
+     disk, produced only by scripts/validate_against_labels.py.
+  2. Burst intensity is now computed per-burst, not per-flow.
+  3. ConfirmedServerRegistry is scoped per pcap_id/upload_id.
+  4. Domain matching now checks label boundaries.
+  5. SNI-derived sub-activity and port-derived activity are namespaced.
+  6. [NEW] Acceptance gate: is_whatsapp_anchored() must be satisfied before
+     guess_media_type() is invoked. Unanchored flows → 'unclassified'.
+  7. [NEW] video_call detection removes the >3x asymmetry requirement.
+     Detection now relies on sustained high bitrate + median packet size.
+  8. [NEW] mmi*/mms* CDN flows classified as 'media_transfer' (unified)
+     instead of forcing an arbitrary 500 KB audio/photo split. mmv* stays
+     video. Only flows where mmv* SNI is present are labelled 'video'.
+  9. [NEW] TCP 5222 port activity renamed 'xmpp_multiplex' to reflect that
+     the FunXMPP stream carries both text chat AND call setup signaling.
+     resolve_final_label() respects this and defaults to 'call_signaling'
+     for undecorated xmpp_multiplex flows.
+  10.[NEW] Size-based fallback (< 10 KB → 'message', etc.) is ONLY applied
+     when cidr_confirmed=True. Non-Meta, non-SNI flows → 'unclassified'.
+  11.[NEW] chat_signaling 'message' return requires a domain or CIDR anchor;
+     unanchored TCP 5222 noise → 'unclassified'.
+  12.[NEW] call_stream_unresolved is preserved as a valid forensic state.
+     It surfaces in the UI with the badge 'Encrypted Call (Unanchored)'.
+     It is NOT force-resolved to voice_call based on duration alone.
 """
 
 import re
@@ -77,12 +79,18 @@ def is_likely_call_media_port(port: Optional[int], protocol_type: Optional[str])
     return 1024 <= port <= 65535
 
 # VoIP bitrate thresholds - see _voip_thresholds_validated() for the gate
-_VOIP_THRESHOLD_KBPS = 12.0   # sustained above -> voice_call
-_VIDEO_THRESHOLD_KBPS = 50.0  # sustained above + asymmetric -> video_call
-_SIGNALING_MAX_KBPS = 8.0     # mean below -> call_signaling
+_VOIP_THRESHOLD_KBPS = 12.0   # sustained above → voice_call
+_VIDEO_THRESHOLD_KBPS = 50.0  # sustained above + large packets → video_call
+_SIGNALING_MAX_KBPS = 8.0     # mean below → call_signaling
 _WINDOW_SECONDS = 5.0
 _WINDOW_SLIDE_STEP = 1.0
-_SUSTAINED_FRACTION = 0.5     # fraction of windows above threshold to call it voice_call
+_SUSTAINED_FRACTION = 0.5     # fraction of windows above threshold
+
+# Fix A: Video detection by packet size, not asymmetry ratio.
+# SRTP-wrapped video frames: 500–1400 bytes.
+# Opus voice payloads: 20–120 bytes.
+# A median > 400 bytes in sustained high-bitrate flows = video.
+_VIDEO_PACKET_SIZE_MEDIAN_BYTES = 400
 
 # Chat/control flow inactivity timeouts, by OS (seconds).
 # Source: Fiadino et al. TMA 2015, Fig. 6(a).
@@ -104,15 +112,22 @@ OS_MEDIA_TIMEOUT_SECONDS = {
     "unknown": None,
 }
 
-# SNI sub-activity patterns - ordered by specificity (most specific first)
+# SNI sub-activity patterns - ordered by specificity (most specific first).
+#
+# DESIGN NOTE (Fix C / Fix 8):
+#   mmv*.whatsapp.net  → 'video'          (video CDN — unambiguous)
+#   mmi*/mms*.whatsapp.net → 'media_transfer'  (photos, voice notes, docs;
+#       cannot be distinguished by size alone — unified label prevents the
+#       old 500 KB audio/photo split from misclassifying HD photos as audio)
+#   c/d/e*.whatsapp.net  → 'chat_control' (FunXMPP/XMPP control plane)
 _SNI_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    (re.compile(r'^mmv\d+.*\.whatsapp\.net$'), 'video'),
-    (re.compile(r'^mm[is]\d+.*\.whatsapp\.net$'), 'photo_audio'),
-    (re.compile(r'^[cde]\d+\.whatsapp\.net$'), 'chat_control'),
-    (re.compile(r'^media.*\.whatsapp\.net$'), 'media_generic'),
-    (re.compile(r'^graph\.whatsapp\.com$'), 'graph_api'),
-    (re.compile(r'^.*\.whatsapp\.net$'), 'whatsapp_generic'),
-    (re.compile(r'^.*\.whatsapp\.com$'), 'whatsapp_generic'),
+    (re.compile(r'^mmv\d+.*\.whatsapp\.net$'),    'video'),
+    (re.compile(r'^mm[is]\d+.*\.whatsapp\.net$'), 'media_transfer'),
+    (re.compile(r'^[cde]\d+\.whatsapp\.net$'),    'chat_control'),
+    (re.compile(r'^media.*\.whatsapp\.net$'),      'media_generic'),
+    (re.compile(r'^graph\.whatsapp\.com$'),        'graph_api'),
+    (re.compile(r'^.*\.whatsapp\.net$'),           'whatsapp_generic'),
+    (re.compile(r'^.*\.whatsapp\.com$'),           'whatsapp_generic'),
 ]
 
 
@@ -307,12 +322,26 @@ def check_domain_matching(
 def check_port_matching(
     server_port: Optional[int], protocol_type: Optional[str]
 ) -> Tuple[str, List[str], Optional[str]]:
-    """Return protocol-aware confidence from the normalized server port only."""
+    """Return protocol-aware confidence from the normalized server port only.
+
+    Port activity labels (Fix F / Fix 9):
+      'dns_resolution'   — Port 53; infrastructure only.
+      'xmpp_multiplex'   — TCP 5222/5223/5228/4244/5242; FunXMPP stream
+                           carries BOTH text chat and call setup. Not
+                           collapsed to 'message' — see resolve_final_label().
+      'call_signaling'   — UDP 3478 STUN; call ICE/TURN signaling.
+      'media_or_https'   — TCP 443; could be CDN media or generic HTTPS.
+      'call_media_candidate' — Dynamic UDP (1024–65535); candidate call media
+                               port, requires CIDR confirmation to escalate.
+    """
     protocol = (protocol_type or "").upper()
     if server_port in DNS_PORTS:
         return "none", ["port_dns"], "dns_resolution"
     if server_port in WHATSAPP_CHAT_PORTS:
-        return "high", ["port_chat"], "chat_signaling"
+        # Fix F: renamed from 'chat_signaling' to 'xmpp_multiplex'.
+        # TCP 5222 carries FunXMPP which multiplexes text chat, call
+        # setup offers, STUN candidates, and presence — not text-only.
+        return "high", ["port_chat"], "xmpp_multiplex"
     if server_port in WHATSAPP_STUN_PORTS:
         return "medium", ["port_stun"], "call_signaling"
     if protocol == "TCP" and server_port in WHATSAPP_MEDIA_PORTS:
@@ -326,43 +355,54 @@ def resolve_final_label(
     media_guess: str,
     port_activity: Optional[str],
     protocol_type: str,
+    sni_sub_activity: Optional[str] = None,
 ) -> str:
     """Single point of truth — one label per flow, no contradictions.
-    
+
     Priority order (highest to lowest evidence strength):
-    1. SNI-derived (observed hostname)
-    2. Protocol + port combination rule
-    3. Bitrate analysis
-    4. Byte-count heuristic
+    1. DNS infrastructure (always wins)
+    2. Protocol + port combination rules
+    3. Bitrate / burst analysis result (media_guess)
+    4. Unclassified fallthrough
+
+    Fix F / Fix 9: xmpp_multiplex replaces the old 'chat_signaling' port_activity.
+    The FunXMPP stream on TCP 5222/5223 carries both text chat AND call
+    setup offers (<call><offer>). Without decryption we cannot split the two,
+    so the conservative label is 'call_signaling' (superset). Only when the
+    SNI confirms a text-only CDN (sni_sub_activity='chat_control') do we
+    label it 'message'.
     """
     # 1. DNS resolution is never user media activity
     if port_activity == "dns_resolution":
         return "dns"
 
-    # 2. WhatsApp chat signaling ports (5222, 5223, 4244, etc.) CANNOT carry CDN media (photo/video/audio).
-    # WhatsApp CDN media uploads/downloads strictly require TLS/443 to mmg.whatsapp.net.
-    # Any flow on chat ports is chat messaging or presence signaling.
-    if port_activity == "chat_signaling":
-        return "message"
+    # 2. xmpp_multiplex (TCP 5222/5223/5228/4244/5242) — Fix F
+    # FunXMPP is a multiplexed channel: text chat + call signaling.
+    # Cannot collapse to 'message' without payload inspection.
+    if port_activity == "xmpp_multiplex":
+        if sni_sub_activity == "chat_control":
+            return "message"    # SNI explicitly confirms text CDN
+        return "call_signaling" # conservative: could be call setup
 
     # 3. Photo/video/audio cannot physically travel over UDP
     # (WhatsApp CDN is always TCP/443). If media_guess says photo
     # but protocol is UDP, the burst heuristic was wrong — override.
     if protocol_type == "UDP":
-        if media_guess in ("photo", "video", "audio"):
+        if media_guess in ("photo", "video", "audio", "message", "media_transfer"):
             if port_activity in ("call_signaling", "call_media_candidate", "call_stream_unresolved"):
-                return port_activity
+                if media_guess == "message":
+                    return "call_signaling"  # Small UDP: just signaling
+                return "call_stream_unresolved"  # Large UDP: call media, not CDN files
             return "call_signaling"  # safest fallback for small UDP
-            
-        # If it's UDP but port activity says media_or_https (e.g. UDP 443 fallback),
-        # it CANNOT be CDN media. It must be a call.
+
+        # UDP 443 fallback — cannot be CDN media, must be a call relay
         if port_activity == "media_or_https":
             if media_guess in ("voice_call", "video_call"):
                 return media_guess
-            return "call_signaling"
+            return "call_stream_unresolved" if media_guess in ("photo", "video", "audio", "media_transfer") else "call_signaling"
 
-    # 4. Call signaling ports
-    if port_activity == "call_signaling" and media_guess in ("photo", "video", "audio", "message"):
+    # 4. STUN / call signaling port overrides spurious media guesses
+    if port_activity == "call_signaling" and media_guess in ("photo", "video", "audio", "message", "media_transfer"):
         return "call_signaling"
 
     return media_guess
@@ -370,7 +410,12 @@ def resolve_final_label(
 def resolve_activity_labels(
     sni_sub_activity: Optional[str], port_activity: Optional[str], protocol_type: str = "TCP"
 ) -> Dict[str, Optional[str]]:
-    """Combines the two activity signals into a display-ready dict."""
+    """Combines the two activity signals into a display-ready dict.
+
+    Fix F: xmpp_multiplex is a valid port_activity value (replaces old
+    'chat_signaling'). Kept as-is here so the DB stores the accurate
+    technical value. UI label mapping is in app.py's _MEDIA_LABEL_MAP.
+    """
     if port_activity == "dns_resolution":
         return {
             "sni_sub_activity": None,
@@ -379,11 +424,11 @@ def resolve_activity_labels(
             "display_activity_source": "port",
             "is_infrastructure": True,
         }
-        
-    # Bug 16 fix: If it's UDP 443, it's not media_or_https, it's a VoIP relay.
+
+    # UDP 443 is never CDN media — it's a VoIP relay port.
     if protocol_type == "UDP" and port_activity == "media_or_https":
         port_activity = "call_signaling"
-        
+
     return {
         "sni_sub_activity": sni_sub_activity,
         "port_activity": port_activity,
@@ -413,11 +458,66 @@ def resolve_timeout(os_hint: str, is_media_flow: bool) -> float:
 # ---------------------------------------------------------------------------
 # VoIP bitrate detection
 # ---------------------------------------------------------------------------
+def _median_packet_size(packets: List[Dict[str, Any]]) -> float:
+    """Median payload length across packets. Used to separate video_call
+    (large SRTP frames 500–1400 B) from voice_call (Opus 20–120 B).
+    Fix A: replaces the unreliable >3x directional asymmetry ratio."""
+    sizes = sorted(p.get('length', 0) for p in packets if p.get('length'))
+    if not sizes:
+        return 0.0
+    mid = len(sizes) // 2
+    return float(sizes[mid] if len(sizes) % 2 else (sizes[mid - 1] + sizes[mid]) / 2.0)
+
+
+def is_whatsapp_anchored(
+    sni_sub_activity: Optional[str],
+    port_activity: Optional[str],
+    cidr_confirmed: bool,
+) -> bool:
+    """Acceptance gate (Fix 6): returns True only if this flow has at least
+    one verified WhatsApp anchor BEFORE media guessing is attempted.
+
+    Anchors (in descending evidence strength):
+      1. WhatsApp SNI observed (sni_sub_activity is not None)
+      2. Remote IP in a confirmed Meta/WhatsApp CIDR block
+      3. Dedicated WhatsApp port (chat ports, STUN, dynamic UDP candidate)
+
+    Flows that pass none of these tests are returned as 'unclassified'
+    without reaching the media-guessing layer. This prevents generic HTTPS
+    traffic (banking apps, CDNs, OS updates) from being labelled as
+    WhatsApp photos/audio/video based solely on transfer size.
+    """
+    if sni_sub_activity is not None:
+        return True
+    if cidr_confirmed:
+        return True
+    # Dedicated WhatsApp ports are strong anchors; generic 443 is not
+    if port_activity in (
+        "xmpp_multiplex",    # TCP 5222/5223/5228/4244/5242
+        "call_signaling",    # UDP 3478 STUN
+        "call_media_candidate",  # dynamic UDP post-STUN
+    ):
+        return True
+    return False
+
+
 def detect_voip_by_bitrate(packets: List[Dict[str, Any]]) -> Optional[str]:
     """
     Analyze UDP packets over 5-second sliding windows.
-    Returns 'voice_call' if sustained bitrate > 12 kbps,
-    'call_signaling' if mean < 8 kbps, else None.
+
+    Returns:
+      'video_call'      — sustained > 50 kbps AND median packet > 400 B
+      'voice_call'      — sustained > 12 kbps (and not video)
+      'call_signaling'  — mean < 8 kbps
+      None              — insufficient data (flow < 5 s)
+
+    Fix A: video_call detection no longer requires a >3x directional
+    asymmetry ratio.  In a normal 2-way video call both participants
+    transmit video simultaneously (ratio ≈ 1.0–1.5).  The asymmetry
+    requirement was correctly identifying 1-way screen shares, but
+    failing every standard 2-way video call.  Median packet size
+    (SRTP video frames ≫ Opus voice payloads) is the replacement
+    discriminator and applies equally to symmetric and asymmetric calls.
     """
     if not _voip_thresholds_validated():
         logging.debug(
@@ -434,49 +534,36 @@ def detect_voip_by_bitrate(packets: List[Dict[str, Any]]) -> Optional[str]:
     if end - start < _WINDOW_SECONDS:
         return None
 
-    window_bitrates = []
-    asymmetry_ratios = []
+    window_bitrates: List[float] = []
     t = start
     while t + _WINDOW_SECONDS <= end:
         window_packets = [
             p for p in packets
             if p.get('timestamp') is not None and t <= p['timestamp'] < t + _WINDOW_SECONDS
         ]
-        
         window_bytes = sum(p.get('length', 0) for p in window_packets)
         window_bitrates.append((window_bytes * 8) / (_WINDOW_SECONDS * 1000))
-        
-        # Calculate symmetry
-        ip_bytes = {}
-        for p in window_packets:
-            src = p.get('src_ip')
-            if src:
-                ip_bytes[src] = ip_bytes.get(src, 0) + p.get('length', 0)
-                
-        if len(ip_bytes) >= 2:
-            sorted_bytes = sorted(ip_bytes.values(), reverse=True)
-            ratio = sorted_bytes[0] / sorted_bytes[1] if sorted_bytes[1] > 0 else float('inf')
-        else:
-            ratio = float('inf')
-            
-        asymmetry_ratios.append(ratio)
-        
         t += _WINDOW_SLIDE_STEP
 
     if not window_bitrates:
         return None
 
     mean_br = sum(window_bitrates) / len(window_bitrates)
-    mean_ratio = sum(asymmetry_ratios) / len(asymmetry_ratios) if asymmetry_ratios else float('inf')
-    
+
+    # Fix A: video detection — sustained high bitrate + large median packet size.
+    # No asymmetry ratio: symmetric 2-way calls are correctly classified.
     sustained_video = sum(1 for b in window_bitrates if b > _VIDEO_THRESHOLD_KBPS)
-    if sustained_video / len(window_bitrates) > _SUSTAINED_FRACTION and mean_ratio > 3.0:
-        return 'video_call'
-        
+    if sustained_video / len(window_bitrates) > _SUSTAINED_FRACTION:
+        median_pkt = _median_packet_size(packets)
+        if median_pkt > _VIDEO_PACKET_SIZE_MEDIAN_BYTES:
+            return 'video_call'
+        # High bitrate but small packets → aggressive voice codec, not video
+        return 'voice_call'
+
     sustained_voice = sum(1 for b in window_bitrates if b > _VOIP_THRESHOLD_KBPS)
     if sustained_voice / len(window_bitrates) > _SUSTAINED_FRACTION:
         return 'voice_call'
-        
+
     if mean_br < _SIGNALING_MAX_KBPS:
         return 'call_signaling'
     return None
@@ -495,56 +582,104 @@ def guess_media_type(
 ) -> str:
     """
     Burst-aware media type classification.
-    Priority: sni_sub_activity > VoIP bitrate > burst intensity > total bytes.
 
-    NOTE: parameter renamed from `sub_activity_hint` to `sni_sub_activity`
-    to make explicit this must be the SNI-derived tag (Fix #5) - passing
-    `port_activity` here by mistake would let a weak, inferred-from-port
-    signal silently override a byte-count-based guess as if it were as
-    strong as an observed hostname.
+    ACCEPTANCE GATE (Fix 6): This function must ONLY be called for flows
+    that satisfy is_whatsapp_anchored(). The pipeline enforces this; the
+    gate is also re-checked internally for defense in depth.
+
+    Priority order:
+      1. DNS infrastructure signal → 'dns'
+      2. is_whatsapp_anchored() gate → 'unclassified' if fails
+      3. SNI-derived sub-activity (strongest per-flow evidence)
+      4. xmpp_multiplex port handling (Fix F)
+      5. UDP call-media paths (CIDR-confirmed, bitrate-gated)
+      6. Burst intensity heuristic (TCP CDN transfers)
+      7. CIDR-gated size fallback (Fix B) — only if cidr_confirmed
+
+    Fix C: 'photo_audio' SNI replaced by 'media_transfer' (unified CDN label
+    for mmi*/mms* servers). No 500 KB audio/photo split — that threshold
+    misclassified HD photos and PDF documents as voice notes.
+
+    Fix D: 'message' fallback now requires a domain or CIDR anchor.
     """
-    # Gate 1: DNS is never user activity
+    # ── Gate 1: DNS infrastructure — never user activity ──────────────────
     if port_activity == "dns_resolution":
         return "dns"
 
-    # Gate 2: Dynamic UDP port on confirmed Meta IP = call stream.
+    # ── Gate 2: Acceptance gate — defense in depth ────────────────────────
+    # pipeline.py is the primary enforcer; this catches any caller that
+    # skips the gate and passes an unanchored flow directly.
+    if not is_whatsapp_anchored(sni_sub_activity, port_activity, cidr_confirmed):
+        return "unclassified"
+
+    total_bytes = sum(p.get('length', 0) for p in packets)
+
+    # ── Gate 3: SNI sub-activity (strongest signal) ───────────────────────
+    if sni_sub_activity == 'video':
+        # mmv*.whatsapp.net — dedicated video CDN, unambiguous.
+        return 'video'
+
+    if sni_sub_activity == 'media_transfer':
+        # Fix C: mmi*/mms* CDN carries photos, voice notes, and documents.
+        # Cannot be split by size alone — use burst shape as discriminator.
+        # Voice notes (Opus ~32 kbps): uniform low-rate stream, small total.
+        # Photos / PDFs: burst-heavy, potentially very large.
+        bursts_with_duration = extract_bursts_with_duration(packets)
+        if bursts_with_duration:
+            burst_intensity = max(
+                sum(p.get('length', 0) for p in b) / span
+                for b, span in bursts_with_duration
+            )
+            # High burst intensity = large file sent fast = photo or document
+            if burst_intensity > 30_000:
+                return 'photo'
+        # Low burst + small total → likely voice note/audio attachment.
+        # 200 KB threshold: 30-second Opus voice note ≈ 120 KB at 32 kbps.
+        # Validated range for audio: < 200 KB. Larger = ambiguous → photo.
+        return 'audio' if total_bytes < 200_000 else 'photo'
+
+    if sni_sub_activity == 'chat_control':
+        # c/d/e*.whatsapp.net — text CDN. Fix D: anchor confirmed via SNI.
+        return 'message'
+
+    # ── Gate 4: xmpp_multiplex (TCP 5222/5223/5228/4244/5242) ─────────────
+    # Fix F: FunXMPP carries both text chat and call setup.
+    # Handled in resolve_final_label(); return conservative placeholder.
+    if port_activity == "xmpp_multiplex":
+        # Fix D: only tag as 'message' if we have a CIDR or SNI anchor.
+        # Unanchored TCP 5222 could be any XMPP client (Jabber, IoT, etc.).
+        if cidr_confirmed or sni_sub_activity is not None:
+            return "message"    # will be re-evaluated in resolve_final_label
+        return "unclassified"
+
+    # ── Gate 5: Dynamic UDP on confirmed Meta IP = call stream ────────────
     # Must be checked BEFORE the burst-intensity path, which would
-    # otherwise misread SRTP packet bursts as photo transfers.
+    # misread SRTP packet bursts as photo transfers.
     if (protocol_type == "UDP"
             and port_activity == "call_media_candidate"
             and cidr_confirmed):
         voip = detect_voip_by_bitrate(packets)
         if voip:
             return voip
-        # Not enough data for bitrate window yet — provisional label
+        # Insufficient data for bitrate window — preserve forensic truth.
+        # Fix 12: call_stream_unresolved is a valid forensic state.
+        # UI maps this to 'Encrypted Call (Unanchored)' badge.
         return "call_stream_unresolved"
 
-    # Gate 3: TCP-only path for media CDN transfers
-    # Photos/videos ONLY travel over TCP/443 to mm*.whatsapp.net
-    # If protocol is UDP and port is not 443, it cannot be a photo.
+    # ── Gate 6: TCP-only CDN path ─────────────────────────────────────────
+    # Photos/videos ONLY travel over TCP/443 to mm*.whatsapp.net.
+    # If protocol is UDP and port is not media_or_https, it cannot be a photo.
     if protocol_type == "UDP" and port_activity not in ("media_or_https", None):
         voip = detect_voip_by_bitrate(packets)
         if voip:
             return voip
-        # Small UDP packets, no bitrate window → call signaling, not photo
-        total_bytes = sum(p.get('length', 0) for p in packets)
+        # Small UDP packets, no bitrate window → call signaling
         if total_bytes < 10_000:
             return "call_signaling"
+        # Larger unresolved UDP on WhatsApp CIDR = unknown call stream
+        return "call_stream_unresolved"
 
-    # Gate 4: Chat signaling ports (5222, 5223, 4244, etc.) NEVER carry CDN media
-    # Photos/videos strictly require TLS/443 to WhatsApp CDN servers (mmg.whatsapp.net)
-    if port_activity == "chat_signaling" or sni_sub_activity == "chat_control":
-        return "message"
-
-    total_bytes = sum(p.get('length', 0) for p in packets)
-
-    if sni_sub_activity == 'video':
-        return 'video'
-    if sni_sub_activity == 'photo_audio':
-        return 'audio' if total_bytes > 500_000 else 'photo'
-    if sni_sub_activity == 'chat_control':
-        return 'message'
-
+    # ── Gate 7: Burst-intensity heuristic (TCP CDN transfers) ─────────────
     if protocol_type == 'UDP':
         voip = detect_voip_by_bitrate(packets)
         if voip:
@@ -566,7 +701,17 @@ def guess_media_type(
             if flow_duration > 300 and burst_intensity < 2_000:
                 return 'message'
 
+    # ── Gate 8: Size-based fallback — ONLY if Meta CIDR confirmed ─────────
+    # Fix B: Generic HTTPS traffic (banking, CDNs, OS updates) spans the
+    # same 10 KB–1 MB range as WhatsApp media. Without a CIDR anchor,
+    # applying size heuristics floods forensic reports with false positives.
+    if not cidr_confirmed:
+        # No SNI + no CIDR + no dedicated port = cannot classify as WA media
+        return 'unclassified'
+
     if total_bytes < 10_000:
+        # Fix D: small flow on confirmed Meta IP — could be keep-alive or
+        # tiny control message. Label 'message' only when CIDR-anchored.
         return 'message'
     if total_bytes < 100_000:
         return 'photo'

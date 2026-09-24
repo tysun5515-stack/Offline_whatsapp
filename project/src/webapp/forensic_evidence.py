@@ -105,7 +105,7 @@ def build_evidence_trail(packet: Dict[str, Any]) -> Dict[str, Any]:
 
     ports = {p for p in (src_port, dst_port) if p is not None}
     chat_port_matched = list(ports & WHATSAPP_CHAT_PORTS)
-    has_chat_port = bool(chat_port_matched) or raw_sub_activity == "chat_signaling"
+    has_chat_port = bool(chat_port_matched) or raw_sub_activity == "xmpp_multiplex"
     has_stun_port = bool(ports & WHATSAPP_STUN_PORTS) or is_stun
     has_media_port = bool(ports & WHATSAPP_MEDIA_PORTS)
     has_dynamic_udp = proto == "UDP" and any(is_likely_call_media_port(p, proto) for p in ports)
@@ -113,14 +113,12 @@ def build_evidence_trail(packet: Dict[str, Any]) -> Dict[str, Any]:
     # -------------------------------------------------------------
     # Forensic Reconciliation: Enforce physical transport truth
     # -------------------------------------------------------------
-    # Rule 1: Chat daemon ports (5222, 5223, 4244) NEVER carry CDN media files
+    # Rule 1: Chat daemon ports (5222, 5223, 4244) carry multiplexed FunXMPP (Chat + Signaling)
     # WhatsApp CDN media uploads/downloads strictly require TLS/443 to mmg.whatsapp.net.
     if has_chat_port:
-        if length <= 64:
-            media_guess = "chat_signaling"
-        else:
-            media_guess = "message"
-        sub_activity = "chat_signaling"
+        # Without SNI, conservatively assume call signaling for all FunXMPP packets
+        media_guess = "call_signaling"
+        sub_activity = "xmpp_multiplex"
     # Rule 2: UDP cannot carry TLS-terminated CDN transfers
     elif proto == "UDP" and raw_media_guess in ("photo", "video", "audio"):
         if has_stun_port:

@@ -55,6 +55,15 @@
 
   <div id="upload-file-list" class="mt-4 flex flex-col gap-2"></div>
 
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+    <label class="text-xs text-gray-600">Capture vantage (optional)
+      <input id="capture-vantage" class="mt-1 w-full border rounded px-3 py-2" placeholder="gateway, host, span port">
+    </label>
+    <label class="text-xs text-gray-600">Known subscriber IPs (optional)
+      <input id="subscriber-ips" class="mt-1 w-full border rounded px-3 py-2" placeholder="10.0.0.2, 2001:db8::2">
+    </label>
+  </div>
+
   <div class="flex items-center gap-2 mt-4">
     <button class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-md transition-colors hidden items-center justify-center shadow-sm" id="btn-upload-batch">
       <i class="fa-solid fa-filter mr-2"></i> Register, Filter &amp; Inspect

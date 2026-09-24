@@ -5,6 +5,7 @@ Joined to DB-1 via batch_id/upload_id in application code only.
 """
 import sqlite3
 import os
+import json
 from typing import List, Dict, Any, Optional
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -99,6 +100,29 @@ def init_analysis_db():
             summary_text  TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS analysis_flows_v2 (
+            flow_id TEXT PRIMARY KEY, upload_id TEXT NOT NULL, flow_instance INTEGER,
+            endpoint_a_ip TEXT NOT NULL, endpoint_a_port INTEGER,
+            endpoint_b_ip TEXT NOT NULL, endpoint_b_port INTEGER,
+            protocol TEXT NOT NULL, local_subscriber_ip TEXT,
+            subscriber_resolution_source TEXT, subscriber_resolution_confidence TEXT,
+            first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+            a_to_b_packets INTEGER NOT NULL, b_to_a_packets INTEGER NOT NULL,
+            a_to_b_bytes INTEGER NOT NULL, b_to_a_bytes INTEGER NOT NULL,
+            media_type TEXT, confidence TEXT, schema_version TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS party_flow_links_v2 (
+            party_id TEXT NOT NULL, flow_id TEXT NOT NULL,
+            PRIMARY KEY (party_id, flow_id)
+        );
+        CREATE TABLE IF NOT EXISTS session_flow_links_v2 (
+            session_id TEXT NOT NULL, flow_id TEXT NOT NULL,
+            PRIMARY KEY (session_id, flow_id)
+        );
+        CREATE TABLE IF NOT EXISTS derived_schema_metadata (
+            component TEXT PRIMARY KEY, version INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS correlation_results (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             upload_id_a   TEXT NOT NULL,
@@ -140,10 +164,34 @@ def init_analysis_db():
     for column in (
         "endpoint_role_source TEXT", "matched_meta_ip TEXT", "whatsapp_signals TEXT", "acceptance_reason TEXT",
         "dns_correlated_hostname TEXT", "dns_correlated_ip TEXT", "dns_response_timestamp REAL", "dns_expires_at REAL",
-        "tls_cipher_suite TEXT", "tls_crypto_info TEXT", "quic_version TEXT"
+        "tls_cipher_suite TEXT", "tls_crypto_info TEXT", "quic_version TEXT",
+        "flow_instance INTEGER", "capture_id TEXT", "endpoint_a_ip TEXT", "endpoint_a_port INTEGER",
+        "endpoint_b_ip TEXT", "endpoint_b_port INTEGER", "local_subscriber_ip TEXT",
+        "subscriber_resolution_source TEXT", "subscriber_resolution_confidence TEXT",
+        "session_start_confirmed INTEGER DEFAULT 0"
     ):
         try:
             conn.execute(f"ALTER TABLE whatsapp_packets ADD COLUMN {column}")
+        except sqlite3.OperationalError:
+            pass
+    for column in (
+        "schema_version TEXT", "upload_id TEXT", "endpoint_a_ip TEXT", "endpoint_b_ip TEXT",
+        "endpoint_a_scope TEXT", "endpoint_b_scope TEXT", "endpoint_a_ports TEXT", "endpoint_b_ports TEXT",
+        "flow_ids TEXT", "a_to_b_packets INTEGER DEFAULT 0", "b_to_a_packets INTEGER DEFAULT 0",
+        "a_to_b_bytes INTEGER DEFAULT 0", "b_to_a_bytes INTEGER DEFAULT 0", "local_subscriber_ip TEXT",
+        "subscriber_resolution_source TEXT", "subscriber_resolution_confidence TEXT"
+    ):
+        try:
+            conn.execute(f"ALTER TABLE parties ADD COLUMN {column}")
+        except sqlite3.OperationalError:
+            pass
+    for column in (
+        "schema_version TEXT", "capture_id TEXT", "local_subscriber_ip TEXT", "observed_span_s REAL",
+        "active_media_duration_s REAL", "transition_gap_s REAL", "flow_ids TEXT", "party_ids TEXT",
+        "remote_endpoints TEXT", "confidence TEXT", "duration_anomaly INTEGER DEFAULT 0"
+    ):
+        try:
+            conn.execute(f"ALTER TABLE sessions ADD COLUMN {column}")
         except sqlite3.OperationalError:
             pass
     # Existing derived rows predate traffic_class.  Their persisted confidence
@@ -180,6 +228,10 @@ def init_analysis_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_upload ON whatsapp_packets(upload_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_ts ON whatsapp_packets(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_confidence ON whatsapp_packets(whatsapp_confidence)")
+    conn.executemany(
+        "INSERT OR REPLACE INTO derived_schema_metadata(component, version) VALUES (?, 2)",
+        [("flows",), ("parties",), ("sessions",)],
+    )
     
     conn.commit()
     conn.close()
@@ -212,6 +264,12 @@ def get_batch_metrics(batch_id: str) -> Optional[Dict[str, Any]]:
 def clear_batch_packets(batch_id: str):
     """Remove all derived data for a batch before re-filtering."""
     conn = _connect()
+    upload_ids = [row[0] for row in conn.execute("SELECT DISTINCT upload_id FROM whatsapp_packets WHERE batch_id = ?", (batch_id,))]
+    party_ids = [row[0] for row in conn.execute("SELECT party_id FROM parties WHERE batch_id = ?", (batch_id,))]
+    session_ids = [row[0] for row in conn.execute("SELECT session_id FROM sessions WHERE batch_id = ?", (batch_id,))]
+    conn.executemany("DELETE FROM analysis_flows_v2 WHERE upload_id = ?", [(uid,) for uid in upload_ids])
+    conn.executemany("DELETE FROM party_flow_links_v2 WHERE party_id = ?", [(pid,) for pid in party_ids])
+    conn.executemany("DELETE FROM session_flow_links_v2 WHERE session_id = ?", [(sid,) for sid in session_ids])
     conn.execute("DELETE FROM whatsapp_packets WHERE batch_id = ?", (batch_id,))
     conn.execute("DELETE FROM parties WHERE batch_id = ?", (batch_id,))
     conn.execute("DELETE FROM sessions WHERE batch_id = ?", (batch_id,))
@@ -223,6 +281,13 @@ def clear_batch_packets(batch_id: str):
 def insert_whatsapp_packets(batch_id: str, upload_id: str, filename: str, packets: List[Dict[str, Any]]):
     """Insert classified packets. Deduplicates by upload_id before inserting."""
     conn = _connect()
+    old_flow_ids = [row[0] for row in conn.execute(
+        "SELECT flow_id FROM analysis_flows_v2 WHERE upload_id = ?", (upload_id,)
+    )]
+    if old_flow_ids:
+        conn.executemany("DELETE FROM party_flow_links_v2 WHERE flow_id = ?", [(fid,) for fid in old_flow_ids])
+        conn.executemany("DELETE FROM session_flow_links_v2 WHERE flow_id = ?", [(fid,) for fid in old_flow_ids])
+    conn.execute("DELETE FROM analysis_flows_v2 WHERE upload_id = ?", (upload_id,))
     conn.execute("DELETE FROM whatsapp_packets WHERE upload_id = ?", (upload_id,))
 
     packets_sorted = sorted(packets, key=lambda p: p['timestamp'] if p.get('timestamp') is not None else 0)
@@ -237,8 +302,10 @@ def insert_whatsapp_packets(batch_id: str, upload_id: str, filename: str, packet
                 protocol, length, flow_id, whatsapp_confidence, whatsapp_media_guess,
                 sub_activity, endpoint_role_source, matched_meta_ip, whatsapp_signals, acceptance_reason,
                 ip_ttl, is_stun_binding, dns_correlated_hostname, dns_correlated_ip, dns_response_timestamp, dns_expires_at,
-                tls_cipher_suite, tls_crypto_info, quic_version)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tls_cipher_suite, tls_crypto_info, quic_version,
+                flow_instance, capture_id, endpoint_a_ip, endpoint_a_port, endpoint_b_ip, endpoint_b_port,
+                local_subscriber_ip, subscriber_resolution_source, subscriber_resolution_confidence, session_start_confirmed)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [
                 (
                     batch_id, upload_id, filename, p.get('packet_no'), p.get('timestamp'),
@@ -252,11 +319,40 @@ def insert_whatsapp_packets(batch_id: str, upload_id: str, filename: str, packet
                     p.get('ip_ttl'), 1 if p.get('is_stun_binding') else 0,
                     p.get('dns_correlated_hostname'), p.get('dns_correlated_ip'),
                     p.get('dns_response_timestamp'), p.get('dns_expires_at'),
-                    p.get('tls_cipher_suite'), p.get('tls_crypto_info'), p.get('quic_version')
+                    p.get('tls_cipher_suite'), p.get('tls_crypto_info'), p.get('quic_version'),
+                    p.get('flow_instance'), p.get('capture_id'), p.get('endpoint_a_ip'), p.get('endpoint_a_port'),
+                    p.get('endpoint_b_ip'), p.get('endpoint_b_port'), p.get('local_subscriber_ip'),
+                    p.get('subscriber_resolution_source'), p.get('subscriber_resolution_confidence'),
+                    1 if p.get('session_start_confirmed') else 0
                 )
                 for p in chunk
             ]
         )
+    flow_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for packet in packets_sorted:
+        if packet.get('flow_id'):
+            flow_groups.setdefault(str(packet['flow_id']), []).append(packet)
+    for flow_id, members in flow_groups.items():
+        timestamps = [p['timestamp'] for p in members if p.get('timestamp') is not None]
+        endpoint_a = members[0].get('endpoint_a_ip')
+        endpoint_b = members[0].get('endpoint_b_ip')
+        if not endpoint_a or not endpoint_b or not timestamps:
+            continue
+        a_packets = [p for p in members if p.get('src_ip') == endpoint_a]
+        b_packets = [p for p in members if p.get('src_ip') == endpoint_b]
+        conn.execute("""INSERT OR REPLACE INTO analysis_flows_v2
+            (flow_id, upload_id, flow_instance, endpoint_a_ip, endpoint_a_port, endpoint_b_ip, endpoint_b_port,
+             protocol, local_subscriber_ip, subscriber_resolution_source, subscriber_resolution_confidence,
+             first_seen, last_seen, a_to_b_packets, b_to_a_packets, a_to_b_bytes, b_to_a_bytes,
+             media_type, confidence, schema_version)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+            flow_id, upload_id, members[0].get('flow_instance'), endpoint_a, members[0].get('endpoint_a_port'),
+            endpoint_b, members[0].get('endpoint_b_port'), members[0].get('protocol'),
+            members[0].get('local_subscriber_ip'), members[0].get('subscriber_resolution_source'),
+            members[0].get('subscriber_resolution_confidence'), min(timestamps), max(timestamps),
+            len(a_packets), len(b_packets), sum(p.get('length', 0) for p in a_packets),
+            sum(p.get('length', 0) for p in b_packets), members[0].get('whatsapp_media_guess'),
+            members[0].get('whatsapp_confidence'), 'flow-v2'))
     conn.commit()
     count = conn.execute(
         "SELECT COUNT(1) FROM whatsapp_packets WHERE upload_id = ?", (upload_id,)
@@ -267,14 +363,21 @@ def insert_whatsapp_packets(batch_id: str, upload_id: str, filename: str, packet
 
 def insert_parties(batch_id: str, parties: List[Dict[str, Any]]):
     conn = _connect()
+    old_party_ids = [row[0] for row in conn.execute("SELECT party_id FROM parties WHERE batch_id = ?", (batch_id,))]
+    if old_party_ids:
+        conn.executemany("DELETE FROM party_flow_links_v2 WHERE party_id = ?", [(pid,) for pid in old_party_ids])
     conn.execute("DELETE FROM parties WHERE batch_id = ?", (batch_id,))
     conn.executemany(
         """INSERT OR REPLACE INTO parties
            (party_id, batch_id, remote_ip, remote_port, protocol,
             local_ips, public_local_ip, packet_count, total_bytes, first_seen, last_seen,
             duration_s, party_type, sub_activity, media_type, confidence, traffic_class, os_hint,
-            session_start_confirmed, is_p2p, media_breakdown, source_file, source_files)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             session_start_confirmed, is_p2p, media_breakdown, source_file, source_files,
+             schema_version, upload_id, endpoint_a_ip, endpoint_b_ip, endpoint_a_scope, endpoint_b_scope,
+             endpoint_a_ports, endpoint_b_ports, flow_ids, a_to_b_packets, b_to_a_packets,
+             a_to_b_bytes, b_to_a_bytes, local_subscriber_ip, subscriber_resolution_source,
+             subscriber_resolution_confidence)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 p['party_id'], batch_id, p['remote_ip'], p.get('remote_port'),
@@ -286,10 +389,19 @@ def insert_parties(batch_id: str, parties: List[Dict[str, Any]]):
                 1 if p.get('session_start_confirmed') else 0,
                 1 if p.get('is_p2p') else 0,
                 p.get('media_breakdown'), p.get('source_file', 'Unknown'),
-                p.get('source_files', '[]')
+                p.get('source_files', '[]'), p.get('schema_version'), p.get('upload_id'),
+                p.get('endpoint_a_ip'), p.get('endpoint_b_ip'), p.get('endpoint_a_scope'), p.get('endpoint_b_scope'),
+                json.dumps(p.get('endpoint_a_ports', [])), json.dumps(p.get('endpoint_b_ports', [])),
+                json.dumps(p.get('flow_ids', [])), p.get('a_to_b_packets', 0), p.get('b_to_a_packets', 0),
+                p.get('a_to_b_bytes', 0), p.get('b_to_a_bytes', 0), p.get('local_subscriber_ip'),
+                p.get('subscriber_resolution_source'), p.get('subscriber_resolution_confidence')
             )
             for p in parties
         ]
+    )
+    conn.executemany(
+        "INSERT OR IGNORE INTO party_flow_links_v2(party_id, flow_id) VALUES (?, ?)",
+        [(p['party_id'], flow_id) for p in parties for flow_id in p.get('flow_ids', [])]
     )
     conn.commit()
     conn.close()
@@ -360,7 +472,10 @@ def get_packets_paged(
     q: Optional[str] = None,
     start_ts: Optional[float] = None,
     end_ts: Optional[float] = None,
-    upload_ids: Optional[List[str]] = None
+    upload_ids: Optional[List[str]] = None,
+    src_ip: Optional[str] = None,
+    dst_ip: Optional[str] = None,
+    any_ip: Optional[str] = None
 ) -> Dict[str, Any]:
     """Return paginated packets with dynamic filtering and overall file statistics."""
     page = max(1, int(page))
@@ -383,6 +498,18 @@ def get_packets_paged(
     if filename:
         where_clauses.append("filename = ?")
         params.append(filename)
+
+    if src_ip:
+        where_clauses.append("src_ip = ?")
+        params.append(src_ip.strip())
+
+    if dst_ip:
+        where_clauses.append("dst_ip = ?")
+        params.append(dst_ip.strip())
+
+    if any_ip:
+        where_clauses.append("(src_ip = ? OR dst_ip = ?)")
+        params.extend([any_ip.strip(), any_ip.strip()])
 
     if confidence and confidence.lower() != 'all':
         where_clauses.append("LOWER(whatsapp_confidence) = LOWER(?)")
@@ -525,18 +652,33 @@ def upsert_geo(ip: str, data: Dict[str, Any]):
 
 def insert_sessions(batch_id: str, sessions: List[Dict[str, Any]]):
     conn = _connect()
+    old_session_ids = [row[0] for row in conn.execute("SELECT session_id FROM sessions WHERE batch_id = ?", (batch_id,))]
+    if old_session_ids:
+        conn.executemany("DELETE FROM session_flow_links_v2 WHERE session_id = ?", [(sid,) for sid in old_session_ids])
     conn.execute("DELETE FROM sessions WHERE batch_id = ?", (batch_id,))
     conn.executemany(
         """INSERT INTO sessions
-           (session_id, batch_id, party_id, start_ts, end_ts, media_type, total_bytes, burst_count, summary_text)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+           (session_id, batch_id, party_id, start_ts, end_ts, media_type, total_bytes, burst_count, summary_text,
+            schema_version, capture_id, local_subscriber_ip, observed_span_s, active_media_duration_s,
+            transition_gap_s, flow_ids, party_ids, remote_endpoints, confidence, duration_anomaly)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
-                s['session_id'], batch_id, s['party_id'], s['start_ts'], s['end_ts'],
-                s.get('media_type'), s['total_bytes'], s['burst_count'], s.get('summary_text')
+                s['session_id'], batch_id, s.get('party_id') or (s.get('party_ids') or ['unresolved'])[0],
+                s['start_ts'], s['end_ts'], s.get('media_type') or s.get('call_type'),
+                s['total_bytes'], s.get('burst_count', s.get('total_packets', 0)), s.get('summary_text'),
+                s.get('schema_version'), s.get('capture_id'), s.get('local_subscriber_ip'),
+                s.get('observed_span_s'), s.get('active_media_duration_s'), s.get('transition_gap_s'),
+                json.dumps(s.get('flow_ids', [])), json.dumps(s.get('party_ids', [])),
+                json.dumps(s.get('remote_endpoints', [])), s.get('confidence'),
+                1 if s.get('duration_anomaly') else 0
             )
             for s in sessions
         ]
+    )
+    conn.executemany(
+        "INSERT OR IGNORE INTO session_flow_links_v2(session_id, flow_id) VALUES (?, ?)",
+        [(s['session_id'], flow_id) for s in sessions for flow_id in s.get('flow_ids', [])]
     )
     conn.commit()
     conn.close()
@@ -553,6 +695,12 @@ def get_sessions(batch_id: str) -> List[Dict[str, Any]]:
 def clear_batch_analysis(batch_id: str):
     """Remove all analysis data for a batch."""
     conn = _connect()
+    upload_ids = [row[0] for row in conn.execute("SELECT DISTINCT upload_id FROM whatsapp_packets WHERE batch_id = ?", (batch_id,))]
+    party_ids = [row[0] for row in conn.execute("SELECT party_id FROM parties WHERE batch_id = ?", (batch_id,))]
+    session_ids = [row[0] for row in conn.execute("SELECT session_id FROM sessions WHERE batch_id = ?", (batch_id,))]
+    conn.executemany("DELETE FROM analysis_flows_v2 WHERE upload_id = ?", [(uid,) for uid in upload_ids])
+    conn.executemany("DELETE FROM party_flow_links_v2 WHERE party_id = ?", [(pid,) for pid in party_ids])
+    conn.executemany("DELETE FROM session_flow_links_v2 WHERE session_id = ?", [(sid,) for sid in session_ids])
     conn.execute("DELETE FROM whatsapp_packets WHERE batch_id = ?", (batch_id,))
     conn.execute("DELETE FROM parties WHERE batch_id = ?", (batch_id,))
     conn.execute("DELETE FROM sessions WHERE batch_id = ?", (batch_id,))
@@ -562,5 +710,10 @@ def clear_batch_analysis(batch_id: str):
 
 def clear_upload_packets(upload_id: str) -> None:
     conn = _connect()
+    flow_ids = [row[0] for row in conn.execute('SELECT flow_id FROM analysis_flows_v2 WHERE upload_id = ?', (upload_id,))]
+    if flow_ids:
+        conn.executemany('DELETE FROM party_flow_links_v2 WHERE flow_id = ?', [(fid,) for fid in flow_ids])
+        conn.executemany('DELETE FROM session_flow_links_v2 WHERE flow_id = ?', [(fid,) for fid in flow_ids])
+    conn.execute('DELETE FROM analysis_flows_v2 WHERE upload_id = ?', (upload_id,))
     conn.execute('DELETE FROM whatsapp_packets WHERE upload_id = ?', (upload_id,))
     conn.commit(); conn.close()

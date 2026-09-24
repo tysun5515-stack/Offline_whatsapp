@@ -119,7 +119,16 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                 from src.importers.csv_importer import process_csv_to_whatsapp_packets
                 stats, packets, _ = process_csv_to_whatsapp_packets(upload['stored_path'])
             else:
-                stats, packets, _ = process_pcap_to_whatsapp_packets(upload['stored_path'], keep_all_traffic=skip_filter)
+                subscriber_ips = []
+                raw_subscribers = upload.get('subscriber_ips') or ''
+                if isinstance(raw_subscribers, str):
+                    subscriber_ips = [ip.strip() for ip in raw_subscribers.split(',') if ip.strip()]
+                stats, packets, _ = process_pcap_to_whatsapp_packets(
+                    upload['stored_path'],
+                    keep_all_traffic=skip_filter,
+                    capture_id=upload_id,
+                    explicit_subscriber_ips=subscriber_ips,
+                )
                 
             if skip_filter:
                 remove_filtered_evidence(upload, status='bypass_no_output')

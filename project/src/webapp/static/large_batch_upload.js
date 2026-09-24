@@ -98,6 +98,10 @@
       try {
         const form = new FormData();
         files.forEach(file => form.append('pcap_file', file));
+        const vantage = document.getElementById('capture-vantage')?.value.trim();
+        const subscribers = document.getElementById('subscriber-ips')?.value.trim();
+        if (vantage) form.append('capture_vantage', vantage);
+        if (subscribers) form.append('subscriber_ips', subscribers);
         return await parseResponse(await fetch('/api/register/batch', {
           method: 'POST', headers: { Accept: 'application/json' }, body: form
         }));

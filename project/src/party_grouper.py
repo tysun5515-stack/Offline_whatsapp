@@ -1,279 +1,225 @@
-"""
-party_grouper.py: Hierarchical 5-level party aggregation.
+"""Capture-scoped endpoint-pair relationship aggregation.
 
-Level 1: Transport flow partitioning (handled by flow_builder.py)
-Level 2: Entity-level aggregation — group by (remote_ip, remote_port, protocol),
-         ignoring ephemeral source port. Prevents one server from appearing as
-         dozens of parties due to port recycling.
-Level 3: Protocol session linking — TLS session ID (falls back to entity key)
-Level 4: Behavioral termination — OS-aware inactivity timeout (in flow_builder.py)
-Level 5: Temporal burst partitioning — 1-second gap threshold
+Parties are geographic/network relationships, not transport flows or calls.
+Call reconstruction is owned by ``session_engine``.
 """
+from __future__ import annotations
 
-import os
-import sys
+import hashlib
+import ipaddress
 import json
-from collections import defaultdict, Counter
-from typing import Dict, Any, List, Tuple, Optional
+from collections import Counter, defaultdict
+from typing import Any, Dict, List, Optional, Tuple
 
-# Need to import check_cidr_matching to classify Relays vs P2P
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.whatsapp_filter import check_cidr_matching
 
-WELL_KNOWN_PORTS = {
-    443, 80, 53, 5222, 5223, 5228, 4244, 5242,  # WhatsApp
-    3478,                                          # STUN
-    8080, 8443, 993, 465, 587, 25,               # Other common
-}
+
+def _ip_key(ip_str: str) -> Tuple[int, int]:
+    ip_obj = ipaddress.ip_address(ip_str)
+    return ip_obj.version, int(ip_obj)
 
 
-def get_entity_key(packet: Dict[str, Any]) -> Tuple:
-    """
-    Level 2: Entity-level aggregation key.
-    Groups by (remote_ip, remote_port, protocol), ignoring ephemeral source port.
-    'Remote' = whichever side is on a well-known port; if neither, use lower IP.
-    """
-    src_ip   = packet.get("src_ip", "")
-    dst_ip   = packet.get("dst_ip", "")
-    src_port = packet.get("src_port") or 0
-    dst_port = packet.get("dst_port") or 0
-    protocol = packet.get("protocol", "UNKNOWN")
-
-    traffic_class = (
-        'unclassified'
-        if (packet.get('whatsapp_confidence') or '').lower() == 'unclassified'
-        else 'confirmed_whatsapp'
-    )
-
-    # Non-IP frames retained by bypass have no addressable remote endpoint.
-    # Keep them as one explicit aggregate rather than presenting a blank IP.
-    if not src_ip or not dst_ip:
-        return ('Non-IP / link-layer traffic', None, protocol or 'NON-IP', traffic_class)
-
-    if dst_port in WELL_KNOWN_PORTS:
-        return (dst_ip, dst_port, protocol, traffic_class)
-    elif src_port in WELL_KNOWN_PORTS:
-        return (src_ip, src_port, protocol, traffic_class)
-    else:
-        # Neither side is well-known; pick the "server" by lower IP string
-        if src_ip <= dst_ip:
-            return (dst_ip, dst_port, protocol, traffic_class)
-        else:
-            return (src_ip, src_port, protocol, traffic_class)
+def _canonical_pair(packet: Dict[str, Any]) -> Tuple[str, str]:
+    a, b = packet.get("endpoint_a_ip"), packet.get("endpoint_b_ip")
+    if a and b:
+        return a, b
+    src, dst = packet.get("src_ip"), packet.get("dst_ip")
+    if not src or not dst:
+        return "Non-IP / link-layer traffic", "Non-IP / link-layer traffic"
+    ordered = sorted((src, dst), key=_ip_key)
+    return ordered[0], ordered[1]
 
 
-def classify_party_type(
-    remote_port: Optional[int],
-    protocol: str,
-    media_guess: Optional[str]
-) -> str:
-    """Classify the entity as client_to_server, peer_to_peer, or unknown."""
-    server_ports = {443, 80, 5222, 5223, 5228, 4244, 5242}
-    p2p_ports    = {3478}
+def get_entity_key(packet: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    """Return the party-v2 identity: capture, endpoint pair, protocol."""
+    endpoint_a, endpoint_b = _canonical_pair(packet)
+    capture_id = str(packet.get("upload_id") or packet.get("capture_id") or "unknown-capture")
+    return capture_id, endpoint_a, endpoint_b, str(packet.get("protocol") or "NON-IP").upper()
 
-    if remote_port in server_ports or media_guess in ('message', 'photo', 'audio', 'video'):
-        return 'client_to_server'
-    if remote_port in p2p_ports or media_guess in ('voice_call', 'video_call', 'call_signaling'):
-        return 'peer_to_peer'
-    return 'unknown'
 
-def _extract_party_crypto(pkts_sorted: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """
-    Walk packets for this party and find the most informative TLS/QUIC handshake.
-    Priority: client_hello > server_hello > quic_only > none
-    """
-    best = None
-    for p in pkts_sorted:
-        info_raw = p.get('tls_crypto_info')
-        if not info_raw:
+def _endpoint_scope(ip_str: str) -> str:
+    if ip_str.startswith("Non-IP"):
+        return "non_ip"
+    try:
+        ip_obj = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return "invalid"
+    if ip_obj.version == 4 and ip_obj in ipaddress.ip_network("100.64.0.0/10"):
+        return "cgnat"
+    if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+        return "local"
+    if ip_obj.is_multicast or ip_obj.is_unspecified or ip_obj.is_reserved:
+        return "non_routable"
+    return "public"
+
+
+def _legacy_local_remote(a: str, b: str, subscriber: Optional[str]) -> Tuple[str, str]:
+    """Populate compatibility fields without affecting relationship identity."""
+    if subscriber == a:
+        return a, b
+    if subscriber == b:
+        return b, a
+    a_scope, b_scope = _endpoint_scope(a), _endpoint_scope(b)
+    if a_scope != "public" and b_scope == "public":
+        return a, b
+    if b_scope != "public" and a_scope == "public":
+        return b, a
+    a_meta = check_cidr_matching(a)[0] == "high"
+    b_meta = check_cidr_matching(b)[0] == "high"
+    if a_meta != b_meta:
+        return (b, a) if a_meta else (a, b)
+    return a, b
+
+
+def _aggregate_crypto(packets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return counts and flow references; never select a party-wide handshake."""
+    counts = Counter()
+    flow_refs, quic_versions = set(), set()
+    for packet in packets:
+        if packet.get("quic_version"):
+            quic_versions.add(str(packet["quic_version"]))
+        raw = packet.get("tls_crypto_info")
+        if not raw:
             continue
         try:
-            info = json.loads(info_raw)
-        except Exception:
+            info = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, json.JSONDecodeError):
             continue
-        if best is None or info.get('type') == 'client_hello':
-            best = info
-            if info.get('type') == 'client_hello':
-                break  # ClientHello is the richest source
-    
-    # QUIC-only fallback
-    quic_versions = [p.get('quic_version') for p in pkts_sorted if p.get('quic_version')]
-    
-    if best is None and not quic_versions:
+        if not isinstance(info, dict):
+            continue
+        kind = info.get("type")
+        counts[kind] += 1
+        counts["pqc_offer"] += int(bool(info.get("pqc") and kind == "client_hello"))
+        counts["pqc_selection"] += int(bool(info.get("pqc") and kind == "server_hello"))
+        if packet.get("flow_id"):
+            flow_refs.add(str(packet["flow_id"]))
+    if not counts and not quic_versions:
         return None
-    
     return {
-        'tls': best,
-        'quic_version': quic_versions[0] if quic_versions else None,
-        'pqc_detected': best.get('pqc', False) if best else False,
-        'transport': 'QUIC' if quic_versions else ('TLS' if best else 'unknown'),
+        "client_hello_count": counts["client_hello"],
+        "server_hello_count": counts["server_hello"],
+        "pqc_offer_count": counts["pqc_offer"],
+        "pqc_selection_count": counts["pqc_selection"],
+        "quic_versions": sorted(quic_versions),
+        "flow_refs": sorted(flow_refs),
     }
 
 
+def _ports_for(ip: str, packets: List[Dict[str, Any]]) -> List[int]:
+    ports = set()
+    for packet in packets:
+        if packet.get("src_ip") == ip and packet.get("src_port") is not None:
+            ports.add(int(packet["src_port"]))
+        if packet.get("dst_ip") == ip and packet.get("dst_port") is not None:
+            ports.add(int(packet["dst_port"]))
+    return sorted(ports)
+
+
 def group_into_entities(
-    packets: List[Dict[str, Any]],
-    upload_id: str,
-    os_hint: str = 'unknown',
+    packets: List[Dict[str, Any]], upload_id: str, os_hint: str = "unknown"
 ) -> List[Dict[str, Any]]:
-    """
-    Level 2 + 5: Group packets into entity-level parties with burst analysis.
-    Returns a list of party dicts ready for db_analysis.insert_parties().
-    """
-    # Level 2: entity grouping
-    entity_packets: Dict[Tuple, List[Dict[str, Any]]] = defaultdict(list)
-    for pkt in packets:
-        key = get_entity_key(pkt)
-        entity_packets[key].append(pkt)
+    """Build endpoint-pair parties while retaining legacy output fields."""
+    grouped: Dict[Tuple[str, str, str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for packet in packets:
+        grouped[get_entity_key(packet)].append(packet)
 
-    parties = []
-    for (remote_ip, remote_port, protocol, traffic_class), pkts in entity_packets.items():
-        pkts_sorted = sorted(pkts, key=lambda p: p.get('timestamp', 0))
+    parties: List[Dict[str, Any]] = []
+    for (capture_id, endpoint_a, endpoint_b, protocol), members in grouped.items():
+        pkts = sorted(members, key=lambda p: p.get("timestamp") or 0.0)
+        timestamps = [p["timestamp"] for p in pkts if p.get("timestamp") is not None]
+        subscriber_votes = Counter(p.get("local_subscriber_ip") for p in pkts if p.get("local_subscriber_ip"))
+        subscriber = subscriber_votes.most_common(1)[0][0] if subscriber_votes else None
+        source_votes = Counter(p.get("subscriber_resolution_source") for p in pkts if p.get("subscriber_resolution_source"))
+        subscriber_source = source_votes.most_common(1)[0][0] if source_votes else "unresolved"
+        subscriber_levels = [p.get("subscriber_resolution_confidence") for p in pkts]
+        subscriber_confidence = "high" if "high" in subscriber_levels else "medium" if "medium" in subscriber_levels else "none"
+        local_ip, remote_ip = _legacy_local_remote(endpoint_a, endpoint_b, subscriber)
 
-        timestamps  = [p['timestamp'] for p in pkts_sorted if p.get('timestamp') is not None]
-        first_seen  = min(timestamps) if timestamps else 0.0
-        last_seen   = max(timestamps) if timestamps else 0.0
-        duration_s  = last_seen - first_seen
-
-        total_bytes  = sum(p.get('length', 0) for p in pkts_sorted)
-        packet_count = len(pkts_sorted)
-
-        filenames = [p.get('filename') for p in pkts_sorted if p.get('filename')]
-        source_file = Counter(filenames).most_common(1)[0][0] if filenames else 'Unknown'
-        import json
-        source_files = json.dumps(list(set(filenames))) if filenames else "[]"
-
-        # Local IPs observed talking to this entity
-        local_ips = set()
-        for p in pkts_sorted:
-            src, dst = p.get('src_ip'), p.get('dst_ip')
-            if src and src != remote_ip:
-                local_ips.add(src)
-            if dst and dst != remote_ip:
-                local_ips.add(dst)
-
-        # Derive dominant media / sub_activity
-        media_guesses = [p.get('whatsapp_media_guess') for p in pkts_sorted if p.get('whatsapp_media_guess')]
-        sub_activities = [p.get('sub_activity') for p in pkts_sorted if p.get('sub_activity')]
-
-        media_guess  = Counter(media_guesses).most_common(1)[0][0] if media_guesses else None
-        sub_activity = Counter(sub_activities).most_common(1)[0][0] if sub_activities else None
-
-        # Detailed breakdown of individual packet classifications within this entity flow
-        raw_labels = [p.get('whatsapp_media_guess') or p.get('sub_activity') for p in pkts_sorted if (p.get('whatsapp_media_guess') or p.get('sub_activity'))]
-        norm_counts = defaultdict(int)
-        for raw in raw_labels:
-            rl = (raw or '').lower()
-            if 'audio' in rl or 'voice' in rl or 'voip' in rl or 'call' in rl:
-                cat = 'VoIP'
-            elif 'video' in rl or 'image' in rl or 'media' in rl or 'photo' in rl:
-                cat = 'Media'
-            elif 'chat' in rl or 'text' in rl or 'message' in rl or 'signal' in rl:
-                cat = 'Chat'
-            else:
-                cat = 'Other'
-            norm_counts[cat] += 1
+        a_packets = [p for p in pkts if p.get("src_ip") == endpoint_a]
+        b_packets = [p for p in pkts if p.get("src_ip") == endpoint_b]
+        a_ports, b_ports = _ports_for(endpoint_a, pkts), _ports_for(endpoint_b, pkts)
+        remote_ports = b_ports if remote_ip == endpoint_b else a_ports
+        flow_ids = sorted({str(p.get("flow_id")) for p in pkts if p.get("flow_id")})
+        labels = [p.get("whatsapp_media_guess") for p in pkts if p.get("whatsapp_media_guess")]
+        activities = [p.get("sub_activity") for p in pkts if p.get("sub_activity")]
+        confidences = [str(p.get("whatsapp_confidence") or "none").lower() for p in pkts]
         
-        media_breakdown = ' · '.join(f"{cnt} {cat}" for cat, cnt in sorted(norm_counts.items(), key=lambda x: -x[1])) if norm_counts else None
-
-        # Confidence: highest observed
-        confidences = [p.get('whatsapp_confidence', 'none') for p in pkts_sorted]
-        if traffic_class == 'unclassified':
-            confidence = 'unclassified'
-            media_guess = 'unclassified'
-            sub_activity = 'generic_network_traffic'
-            media_breakdown = 'Unclassified Traffic'
-        elif 'high' in confidences:
-            confidence = 'high'
-        elif 'medium' in confidences:
-            confidence = 'medium'
-        elif 'infrastructure' in confidences:
-            confidence = 'infrastructure'
-        else:
-            confidence = 'none'
-
-        party_type = (
-            'unclassified_endpoint'
-            if traffic_class == 'unclassified'
-            else classify_party_type(remote_port, protocol, media_guess)
-        )
-
-        # 3. Determine session start confirmation (OR logic across packets)
-        session_start_confirmed = any(p.get('session_start_confirmed', False) for p in pkts_sorted)
-
-        # 4. Look for STUN mapped address (public local IP)
-        public_local_ip = None
-        for p in pkts_sorted:
-            if p.get('stun_mapped_address'):
-                addr = p['stun_mapped_address']
-                if addr.startswith('['):
-                    public_local_ip = addr.split(']')[0].lstrip('[')
-                else:
-                    public_local_ip = addr.rsplit(':', 1)[0]
-                break
-
-        # 5. Determine Relay vs P2P for calls (relying on geo_mapping later, defaulting to party_type here)
-        is_p2p = False
-        if traffic_class != 'unclassified' and (party_type == 'peer_to_peer' or media_guess in ('voice_call', 'video_call')):
-            is_p2p = True
-
-        party_id = f"{upload_id}_{traffic_class}_{remote_ip}_{remote_port}_{protocol}"
-        
-        crypto_summary = _extract_party_crypto(pkts_sorted)
-
-        call_media_types = {'voice_call', 'video_call', 'call_stream_unresolved'}
-        call_pkts = [
-            p for p in pkts_sorted
-            if (p.get('whatsapp_media_guess') or '') in call_media_types
+        _ACTIVITY_PRIORITY = [
+            'video_call', 'voice_call', 'call_stream_unresolved',
+            'call_signaling', 'media_transfer', 'photo', 'audio',
+            'video', 'message', 'xmpp_multiplex', 'unclassified',
         ]
+        
+        def _dominant(candidates: List[str]) -> Optional[str]:
+            c_set = set(candidates)
+            for prio in _ACTIVITY_PRIORITY:
+                if prio in c_set:
+                    return prio
+            return Counter(candidates).most_common(1)[0][0] if candidates else None
 
-        if call_pkts:
-            call_ts = sorted(p['timestamp'] for p in call_pkts if p.get('timestamp'))
-            # Group into call windows using 10s gap (shorter than the 60s session gap)
-            call_windows = []
-            if call_ts:
-                window_start = call_ts[0]
-                window_end   = call_ts[0]
-                for ts in call_ts[1:]:
-                    if ts - window_end > 10.0:
-                        call_windows.append(window_end - window_start)
-                        window_start = ts
-                    window_end = ts
-                call_windows.append(window_end - window_start)
-            call_duration_s = sum(call_windows)
-            longest_call_s  = max(call_windows) if call_windows else 0.0
-        else:
-            call_duration_s = 0.0
-            longest_call_s  = 0.0
-            call_windows = []
+        media_guess = _dominant(labels)
+        sub_activity = _dominant(activities)
+        traffic_class = "unclassified" if all(c == "unclassified" for c in confidences) else "confirmed_whatsapp"
+        confidence = next((c for c in ("high", "medium", "infrastructure", "unclassified", "none") if c in confidences), "none")
+        filenames = sorted({str(p.get("filename")) for p in pkts if p.get("filename")})
+        breakdown = Counter(labels or activities)
+        seed = f"{capture_id}|{endpoint_a}|{endpoint_b}|{protocol}"
+        party_id = "party-v2-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
 
         parties.append({
-            'party_id':     party_id,
-            'upload_id':    upload_id,
-            'remote_ip':    remote_ip,
-            'remote_port':  remote_port,
-            'protocol':     protocol,
-            'local_ips':    ','.join(sorted(local_ips)),
-            'public_local_ip': public_local_ip,
-            'packet_count': packet_count,
-            'total_bytes':  total_bytes,
-            'first_seen':   first_seen,
-            'last_seen':    last_seen,
-            'duration_s':   duration_s,
-            'party_type':   party_type,
-            'sub_activity': sub_activity,
-            'media_type':   media_guess,
-            'confidence':   confidence,
-            'traffic_class': traffic_class,
-            'os_hint':      os_hint,
-            'is_p2p':       is_p2p,
-            'session_start_confirmed': session_start_confirmed,
-            'media_breakdown': media_breakdown,
-            'source_file': source_file,
-            'source_files': source_files,
-            'crypto_summary': crypto_summary,
-            'call_duration_s': call_duration_s,
-            'longest_call_s': longest_call_s,
-            'call_window_count': len(call_windows) if call_pkts else 0,
+            "schema_version": "party-relationship-v2",
+            "party_id": party_id,
+            "upload_id": capture_id,
+            "analysis_scope_id": upload_id,
+            "endpoint_a_ip": endpoint_a,
+            "endpoint_b_ip": endpoint_b,
+            "endpoint_a_scope": _endpoint_scope(endpoint_a),
+            "endpoint_b_scope": _endpoint_scope(endpoint_b),
+            "endpoint_a_ports": a_ports,
+            "endpoint_b_ports": b_ports,
+            "protocol": protocol,
+            "flow_ids": flow_ids,
+            "a_to_b_packets": len(a_packets),
+            "b_to_a_packets": len(b_packets),
+            "a_to_b_bytes": sum(p.get("length", 0) for p in a_packets),
+            "b_to_a_bytes": sum(p.get("length", 0) for p in b_packets),
+            "local_subscriber_ip": subscriber,
+            "subscriber_resolution_source": subscriber_source,
+            "subscriber_resolution_confidence": subscriber_confidence,
+            # Compatibility fields consumed by existing templates/API clients.
+            "remote_ip": remote_ip,
+            "remote_port": remote_ports[0] if len(remote_ports) == 1 else None,
+            "local_ips": local_ip or "",
+            "public_local_ip": None,
+            "packet_count": len(pkts),
+            "total_bytes": sum(p.get("length", 0) for p in pkts),
+            "first_seen": min(timestamps) if timestamps else 0.0,
+            "last_seen": max(timestamps) if timestamps else 0.0,
+            "duration_s": max(timestamps) - min(timestamps) if timestamps else 0.0,
+            "party_type": (
+                "peer_to_peer" if sub_activity in ('voice_call', 'video_call', 'call_stream_unresolved', 'call_signaling') else
+                "client_to_server" if sub_activity in ('message', 'photo', 'audio', 'video', 'media_transfer', 'xmpp_multiplex') or (remote_ports and remote_ports[0] in {443, 80, 5222, 5223, 5228}) else
+                "unknown"
+            ),
+            "sub_activity": sub_activity,
+            "media_type": media_guess,
+            "confidence": confidence,
+            "traffic_class": traffic_class,
+            "os_hint": os_hint,
+            "is_p2p": sub_activity in ('voice_call', 'video_call', 'call_stream_unresolved', 'call_signaling'),
+            "session_start_confirmed": any(p.get("session_start_confirmed") for p in pkts),
+            "media_breakdown": " · ".join(f"{count} {label}" for label, count in breakdown.most_common()) or None,
+            "source_file": filenames[0] if len(filenames) == 1 else "Multiple captures",
+            "source_files": json.dumps(filenames),
+            "crypto_summary": _aggregate_crypto(pkts),
+            "call_duration_s": 0.0,
+            "longest_call_s": 0.0,
+            "call_window_count": 0,
+            "sessions": [],
+            "voice_call_count": 0,
+            "video_call_count": 0,
+            "unresolved_call_count": 0,
+            "voice_duration_s": 0.0,
+            "video_duration_s": 0.0,
         })
-
-    return sorted(parties, key=lambda p: p['packet_count'], reverse=True)
+    return sorted(parties, key=lambda party: party["packet_count"], reverse=True)

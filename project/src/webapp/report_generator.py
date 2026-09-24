@@ -101,7 +101,7 @@ def generate_report(uploads: List[Dict[str, Any]], start_ts: Optional[float], en
     effective_end = end_ts if end_ts is not None else float(bounds['max_ts']) + 0.000001
     where, params = _base_where(upload_ids, effective_start, effective_end)
 
-    metrics = dict(conn.execute(f'''SELECT COUNT(*) AS filtered_packets, COUNT(DISTINCT flow_id) AS total_flows,
+    metrics = dict(conn.execute(f'''SELECT COUNT(*) AS filtered_packets, COUNT(DISTINCT upload_id || ':' || flow_id) AS total_flows,
         COALESCE(SUM(length), 0) AS total_bytes FROM whatsapp_packets WHERE {where}''', params).fetchone())
     confidence_rows = conn.execute(f'''SELECT COALESCE(LOWER(whatsapp_confidence), 'unknown') AS label, COUNT(*) AS count
         FROM whatsapp_packets WHERE {where} GROUP BY label''', params).fetchall()
@@ -111,7 +111,7 @@ def generate_report(uploads: List[Dict[str, Any]], start_ts: Optional[float], en
         src_ip, dst_ip, src_port, dst_port, protocol, SUM(length) AS bytes, COUNT(*) AS packets,
         whatsapp_confidence, whatsapp_media_guess
         FROM whatsapp_packets WHERE {where} AND flow_id IS NOT NULL
-        GROUP BY flow_id, src_ip, dst_ip, src_port, dst_port, protocol, whatsapp_confidence, whatsapp_media_guess
+        GROUP BY upload_id, flow_id, src_ip, dst_ip, src_port, dst_port, protocol, whatsapp_confidence, whatsapp_media_guess
         ORDER BY start_time LIMIT 200''', params).fetchall()]
     packets = [dict(row) for row in conn.execute(f'SELECT * FROM whatsapp_packets WHERE {where} ORDER BY timestamp', params).fetchall()]
     conn.close()
@@ -150,6 +150,9 @@ def generate_report(uploads: List[Dict[str, Any]], start_ts: Optional[float], en
 
     media_counts = {str(row['label']).replace('_', ' ').title(): int(row['count']) for row in media_rows}
     parties = group_into_entities(packets, 'evidence-report', 'unknown') if 'geolocation' in phases else []
+    if parties:
+        from src.session_engine import reconstruct_flow_sessions, attach_session_metrics
+        attach_session_metrics(parties, reconstruct_flow_sessions(packets, parties))
     for party in parties:
         geo = get_geo(party['remote_ip']) or {}
         party.update(classify_remote_party(party['remote_ip'], str(geo.get('asn') or ''), geo.get('asn_org'),
