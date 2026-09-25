@@ -364,11 +364,18 @@ def build_evidence_trail(packet: Dict[str, Any]) -> Dict[str, Any]:
 
     summary_narrative = " ".join(narrative_parts)
 
+    try:
+        from src.webapp.app import _media_display
+        sub_activity_display = _media_display(sub_activity)
+    except ImportError:
+        sub_activity_display = sub_activity.replace('_', ' ').title()
+
     return {
         "verdict": {
             "confidence": confidence,
             "media_guess": media_guess,
             "sub_activity": sub_activity,
+            "sub_activity_display": sub_activity_display,
             "protocol": proto,
             "is_stun": is_stun,
             "length": length,

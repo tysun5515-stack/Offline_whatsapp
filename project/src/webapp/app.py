@@ -126,16 +126,32 @@ _MEDIA_LABEL_MAP: dict = {
     'voice_call'            : 'Voice Call',
     'video_call'            : 'Video Call',
     'call_stream_unresolved': 'Encrypted Call (Unanchored)',
-    'call_signaling'        : 'Call Signaling',
+    'call_signaling'        : 'Call Setup / Signaling',
     'media_transfer'        : 'Media Attachment',
     'photo'                 : 'Photo',
     'audio'                 : 'Audio / Voice Note',
     'video'                 : 'Video',
     'message'               : 'Text Message',
-    'dns'                   : 'DNS',
-    'xmpp_multiplex'        : 'Chat / Call Signal',
+    'dns'                   : 'DNS Resolution',
+    'xmpp_multiplex'        : 'Chat & Call Signaling Channel (FunXMPP)',
     'unclassified'          : 'Unclassified',
+    # Port activity tokens
+    'media_or_https'        : 'WhatsApp HTTPS / TLS Channel (Port 443)',
+    'quic_media_or_relay'   : 'WhatsApp QUIC Channel (UDP/443)',
+    'call_media_candidate'  : 'Call Media Relay Candidate (UDP)',
+    'media_cdn_upload'      : 'Media CDN Upload (QUIC)',
+    'chat_control'          : 'Chat Control Channel (QUIC)',
+    'port_https'            : 'HTTPS / TLS Encrypted',
+    'port_quic'             : 'QUIC Encrypted (UDP/443)',
+    'port_dynamic_udp'      : 'Dynamic UDP (Call Media Relay)',
+    'port_chat'             : 'WhatsApp Chat Daemon Port',
+    'port_stun'             : 'STUN / NAT Traversal',
 }
+
+_VOIP_LABELS_DB = frozenset({'voice_call', 'video_call', 'call_stream_unresolved'})
+_SIGNALING_LABELS_DB = frozenset({'call_signaling', 'call_media_candidate', 'xmpp_multiplex'})
+_MEDIA_LABELS_DB = frozenset({'video', 'photo', 'audio', 'media_transfer'})
+_CHAT_LABELS_DB = frozenset({'message', 'chat_control'})
 
 
 def _media_display(raw_label: str) -> str:
@@ -363,22 +379,14 @@ def create_app():
                 # Exact-label bucketing: new pipeline values (media_transfer,
                 # xmpp_multiplex, call_stream_unresolved) are correctly placed
                 # instead of falling through to 'Other' via substring checks.
-                _VOIP_LABELS_DB = frozenset({
-                    'voice_call', 'video_call', 'call_stream_unresolved',
-                    'call_signaling', 'call_media_candidate',
-                })
-                _MEDIA_LABELS_DB = frozenset({
-                    'video', 'photo', 'audio', 'media_transfer',
-                })
-                _CHAT_LABELS_DB = frozenset({
-                    'message', 'chat_control', 'xmpp_multiplex',
-                })
                 media_counts = defaultdict(int)
                 for p in packets:
                     media = p.get('whatsapp_media_guess') or p.get('sub_activity') or 'Other'
                     ml = media.lower()
                     if ml in _VOIP_LABELS_DB:
                         label = 'VoIP / Call'
+                    elif ml in _SIGNALING_LABELS_DB:
+                        label = 'Call Signaling'
                     elif ml in _MEDIA_LABELS_DB:
                         label = 'Media'
                     elif ml in _CHAT_LABELS_DB:
@@ -419,11 +427,13 @@ def create_app():
                     for p in tp_pkts:
                         m = p.get('whatsapp_media_guess') or p.get('sub_activity') or 'Other'
                         ml = m.lower()
-                        if 'audio' in ml or 'voice' in ml or 'voip' in ml or 'call' in ml:
-                            lbl = 'VoIP'
-                        elif 'video' in ml or 'image' in ml or 'media' in ml or 'photo' in ml:
+                        if ml in _VOIP_LABELS_DB:
+                            lbl = 'VoIP / Call'
+                        elif ml in _SIGNALING_LABELS_DB:
+                            lbl = 'Call Signaling'
+                        elif ml in _MEDIA_LABELS_DB:
                             lbl = 'Media'
-                        elif 'chat' in ml or 'text' in ml or 'message' in ml or 'signal' in ml:
+                        elif ml in _CHAT_LABELS_DB:
                             lbl = 'Chat'
                         else:
                             lbl = 'Other'

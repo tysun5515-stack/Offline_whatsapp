@@ -375,16 +375,25 @@ if (compareBtn) {
     voice_call: 'Voice Call',
     video_call: 'Video Call',
     call_stream_unresolved: 'Encrypted Call (Unanchored)',
-    call_signaling: 'Call Signaling',
+    call_signaling: 'Call Setup / Signaling',
     media_transfer: 'Media Attachment',
     photo: 'Photo',
     audio: 'Audio / Voice Note',
     video: 'Video',
     message: 'Text Message',
-    dns: 'DNS',
-    xmpp_multiplex: 'Chat / Call Signal',
+    dns: 'DNS Resolution',
+    xmpp_multiplex: 'Chat & Call Signaling Channel (FunXMPP)',
     unclassified: 'Unclassified',
-    call_media_candidate: 'Call Stream'
+    media_or_https: 'WhatsApp HTTPS / TLS Channel (Port 443)',
+    quic_media_or_relay: 'WhatsApp QUIC Channel (UDP/443)',
+    call_media_candidate: 'Call Media Relay Candidate (UDP)',
+    media_cdn_upload: 'Media CDN Upload (QUIC)',
+    chat_control: 'Chat Control Channel (QUIC)',
+    port_https: 'HTTPS / TLS Encrypted',
+    port_quic: 'QUIC Encrypted (UDP/443)',
+    port_dynamic_udp: 'Dynamic UDP (Call Media Relay)',
+    port_chat: 'WhatsApp Chat Daemon Port',
+    port_stun: 'STUN / NAT Traversal'
   })[value] || (value || 'Unclassified').replace(/_/g, ' ');
   const range = () => { const p=new URLSearchParams(location.search); return {from:p.get('capture_from'),to:p.get('capture_to')}; };
   function url(path) { const u=new URL(path, location.origin), r=range(), jobId=new URLSearchParams(location.search).get('job_id'); if(r.from)u.searchParams.set('capture_from',r.from); if(r.to)u.searchParams.set('capture_to',r.to); if(jobId)u.searchParams.set('job_id',jobId); return u; }

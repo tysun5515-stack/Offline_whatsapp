@@ -205,10 +205,13 @@ def rebuild_flows(
             # Per-flow, media-aware, OS-aware timeout
             is_media = _is_media_flow(flow["server_port"])
             if protocol == "UDP":
-                timeout = 10.0 if any(
-                    p is not None and 1024 <= p <= 65535
-                    for p in (src_port, dst_port)
-                ) else 30.0
+                ports = {src_port, dst_port}
+                if 443 in ports:
+                    timeout = 30.0  # QUIC CDN session — give it a long timeout
+                elif any(p is not None and 1024 <= p <= 65535 for p in ports):
+                    timeout = 10.0
+                else:
+                    timeout = 30.0
             else:
                 timeout = wf.resolve_timeout(os_hint, is_media_flow=is_media)
 

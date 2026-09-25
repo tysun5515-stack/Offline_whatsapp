@@ -287,7 +287,7 @@
         </div>
         <div>
           <div class="text-[9px] text-gray-500" title="Dominant activity aggregated across all packets in this flow">Type</div>
-          <div class="text-[10px] font-bold text-gray-700 truncate px-0.5" title="Dominant activity: {{ top_party.sub_activity or top_party.party_type or 'â€”' }}{% if top_party.media_breakdown %} ({{ top_party.media_breakdown }}){% endif %}">{{ top_party.sub_activity or top_party.party_type or 'â€”' }}</div>
+          <div class="text-[10px] font-bold text-gray-700 truncate px-0.5" title="Dominant activity: {{ top_party.activity or top_party.party_type or 'â€”' }}{% if top_party.media_breakdown %} ({{ top_party.media_breakdown }}){% endif %}">{{ top_party.activity or top_party.party_type or 'â€”' }}</div>
         </div>
         <div>
           <div class="text-[9px] text-gray-500">Confidence</div>
@@ -373,7 +373,7 @@
             <td class="px-4 py-2 font-mono text-gray-600">{{ (p.local_ips or '').split(',')[0].strip() or 'â€”' }}</td>
             <td class="px-4 py-2 font-mono font-medium text-gray-900">{{ p.remote_ip }}</td>
             <td class="px-4 py-2">
-              {% set sub = (p.sub_activity or p.party_type or 'other').lower() %}
+              {% set sub = (p.activity or p.party_type or 'other').lower() %}
               {% if 'voip' in sub or 'call' in sub or 'audio' in sub %}
               <span class="bg-green-100 text-green-700 px-2 py-0.5 rounded text-[10px] font-medium border border-green-200">VoIP</span>
               {% elif 'video' in sub or 'media' in sub %}
@@ -381,7 +381,7 @@
               {% elif 'chat' in sub or 'signal' in sub or 'text' in sub %}
               <span class="bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-[10px] font-medium border border-purple-200">Chat</span>
               {% else %}
-              <span class="bg-gray-100 text-gray-600 px-2 py-0.5 rounded text-[10px] font-medium border border-gray-200">{{ p.sub_activity or p.party_type or 'Other' }}</span>
+              <span class="bg-gray-100 text-gray-600 px-2 py-0.5 rounded text-[10px] font-medium border border-gray-200">{{ p.activity or p.party_type or 'Other' }}</span>
               {% endif %}
             </td>
             <td class="px-4 py-2">{{ p.packet_count }}</td>

@@ -209,7 +209,8 @@ def process_pcap_to_whatsapp_packets(
                 flow_duration,
                 sni_sub_activity=sub_activity_domain,
                 port_activity=port_activity,
-                cidr_confirmed=cidr_confirmed
+                cidr_confirmed=cidr_confirmed,
+                client_ip=flow.get('client_ip')
             )
         else:
             flow["media_type"] = "unclassified"
@@ -219,7 +220,7 @@ def process_pcap_to_whatsapp_packets(
         if keep_all_traffic or is_wa_flow:
             whatsapp_flow_count += 1
             
-            labels = resolve_activity_labels(sub_activity_domain, port_activity, flow["protocol_type"])
+            labels = resolve_activity_labels(sub_activity_domain, port_activity, flow["protocol_type"], media_guess=flow.get("media_type"))
             
             # Fix F: pass sni_sub_activity so resolve_final_label can
             # correctly handle xmpp_multiplex flows that have SNI decoration.
@@ -275,7 +276,7 @@ def process_pcap_to_whatsapp_packets(
         
         whatsapp_flow_count += 1
         
-        labels = resolve_activity_labels(flow.get("sni_sub_activity"), flow.get("port_activity"), flow["protocol_type"])
+        labels = resolve_activity_labels(flow.get("sni_sub_activity"), flow.get("port_activity"), flow["protocol_type"], media_guess=flow.get("media_type"))
         final_media_guess = resolve_final_label(flow.get("media_type"), flow.get("port_activity"), flow["protocol_type"])
         display_activity = labels.get("display_activity")
         

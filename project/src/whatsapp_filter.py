@@ -76,6 +76,11 @@ def is_likely_call_media_port(port: Optional[int], protocol_type: Optional[str])
     """True only for a server-side dynamic UDP call-media port."""
     if port is None or (protocol_type or "").upper() != "UDP":
         return False
+    # Port 443 is a dedicated media port (QUIC CDN uploads); it is NOT a
+    # dynamic call-media port. Exclude it explicitly so callers cannot
+    # accidentally classify QUIC media traffic as VoIP.
+    if port in WHATSAPP_MEDIA_PORTS:
+        return False
     return 1024 <= port <= 65535
 
 # VoIP bitrate thresholds - see _voip_thresholds_validated() for the gate
@@ -344,8 +349,15 @@ def check_port_matching(
         return "high", ["port_chat"], "xmpp_multiplex"
     if server_port in WHATSAPP_STUN_PORTS:
         return "medium", ["port_stun"], "call_signaling"
-    if protocol == "TCP" and server_port in WHATSAPP_MEDIA_PORTS:
-        return "low", ["port_https"], "media_or_https"
+    if server_port in WHATSAPP_MEDIA_PORTS:
+        if protocol == "TCP":
+            return "low", ["port_https"], "media_or_https"
+        else:
+            # UDP/443 = QUIC. Could be CDN media upload OR a TURN relay on 443.
+            # Label separately; downstream uses SNI + CIDR + directionality to resolve.
+            return "low", ["port_quic"], "quic_media_or_relay"
+    # Only truly dynamic ports (>1024, NOT 443) are call media candidates.
+    # is_likely_call_media_port() now also excludes 443 internally (Change 1).
     if is_likely_call_media_port(server_port, protocol):
         return "low", ["port_dynamic_udp"], "call_media_candidate"
     return "none", [], None
@@ -384,6 +396,19 @@ def resolve_final_label(
             return "message"    # SNI explicitly confirms text CDN
         return "call_signaling" # conservative: could be call setup
 
+    # QUIC CDN / TURN-relay on UDP/443 — must be handled BEFORE the generic
+    # UDP override below, which would downgrade a correct "photo" label to
+    # "call_stream_unresolved".
+    if port_activity == "quic_media_or_relay":
+        if media_guess in ("photo", "audio", "video", "media_transfer", "media_generic"):
+            return media_guess   # Media label confirmed — preserve it.
+        if media_guess == "message":
+            return "message"    # QUIC chat/control channel correctly identified
+        if media_guess in ("voice_call", "video_call", "call_signaling",
+                           "call_stream_unresolved"):
+            return media_guess   # Call-via-TURN confirmed by bitrate analysis.
+        return "call_stream_unresolved"  # Unknown QUIC flow to Meta IP — uncertain, not absent.
+
     # 3. Photo/video/audio cannot physically travel over UDP
     # (WhatsApp CDN is always TCP/443). If media_guess says photo
     # but protocol is UDP, the burst heuristic was wrong — override.
@@ -408,7 +433,10 @@ def resolve_final_label(
     return media_guess
 
 def resolve_activity_labels(
-    sni_sub_activity: Optional[str], port_activity: Optional[str], protocol_type: str = "TCP"
+    sni_sub_activity: Optional[str], 
+    port_activity: Optional[str], 
+    protocol_type: str = "TCP",
+    media_guess: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
     """Combines the two activity signals into a display-ready dict.
 
@@ -429,10 +457,22 @@ def resolve_activity_labels(
     if protocol_type == "UDP" and port_activity == "media_or_https":
         port_activity = "call_signaling"
 
+    # QUIC (UDP/443): map internal token to analyst-readable display label.
+    # The technical port_activity is preserved for DB storage; display_activity
+    # uses the human-readable form for the UI layer.
+    if port_activity == "quic_media_or_relay" and media_guess == "message":
+        _QUIC_DISPLAY_LABEL = "chat_control"
+    else:
+        _QUIC_DISPLAY_LABEL = "media_cdn_upload"
+
     return {
         "sni_sub_activity": sni_sub_activity,
         "port_activity": port_activity,
-        "display_activity": sni_sub_activity or port_activity,
+        "display_activity": (
+            sni_sub_activity
+            or (_QUIC_DISPLAY_LABEL if port_activity == "quic_media_or_relay" else None)
+            or port_activity
+        ),
         "display_activity_source": "sni" if sni_sub_activity else ("port" if port_activity else None),
     }
 
@@ -496,6 +536,7 @@ def is_whatsapp_anchored(
         "xmpp_multiplex",    # TCP 5222/5223/5228/4244/5242
         "call_signaling",    # UDP 3478 STUN
         "call_media_candidate",  # dynamic UDP post-STUN
+        "quic_media_or_relay",
     ):
         return True
     return False
@@ -531,8 +572,29 @@ def detect_voip_by_bitrate(packets: List[Dict[str, Any]]) -> Optional[str]:
     if not timestamps:
         return None
     start, end = min(timestamps), max(timestamps)
-    if end - start < _WINDOW_SECONDS:
+    
+    _MIN_WINDOW_SECONDS = 1.0   # Minimum flow duration to attempt any bitrate analysis
+    if end - start < _MIN_WINDOW_SECONDS:
+        # Too short for any meaningful bitrate analysis.
         return None
+
+    # Short flows (between _MIN_WINDOW and _WINDOW_SECONDS):
+    # Compute a single whole-flow bitrate. Avoids partial-window division errors
+    # that occur when the sliding window overshoots the flow's end timestamp.
+    if end - start < _WINDOW_SECONDS:
+        flow_bytes = sum(p.get("length", 0) for p in packets)
+        flow_duration_local = end - start
+        single_bitrate_kbps = (flow_bytes * 8) / (flow_duration_local * 1000)
+        if single_bitrate_kbps > _VIDEO_THRESHOLD_KBPS:
+            median_pkt = _median_packet_size(packets)
+            if median_pkt > _VIDEO_PACKET_SIZE_MEDIAN_BYTES:
+                return "video_call"
+            return "voice_call"
+        if single_bitrate_kbps > _VOIP_THRESHOLD_KBPS:
+            return "voice_call"
+        if single_bitrate_kbps < _SIGNALING_MAX_KBPS:
+            return "call_signaling"
+        return None  # Ambiguous short flow
 
     window_bitrates: List[float] = []
     t = start
@@ -579,6 +641,7 @@ def guess_media_type(
     sni_sub_activity: Optional[str] = None,
     port_activity: Optional[str] = None,
     cidr_confirmed: bool = False,
+    client_ip: Optional[str] = None,
 ) -> str:
     """
     Burst-aware media type classification.
@@ -655,15 +718,74 @@ def guess_media_type(
     # ── Gate 5: Dynamic UDP on confirmed Meta IP = call stream ────────────
     # Must be checked BEFORE the burst-intensity path, which would
     # misread SRTP packet bursts as photo transfers.
-    if (protocol_type == "UDP"
-            and port_activity == "call_media_candidate"
-            and cidr_confirmed):
-        voip = detect_voip_by_bitrate(packets)
-        if voip:
-            return voip
-        # Insufficient data for bitrate window — preserve forensic truth.
-        # Fix 12: call_stream_unresolved is a valid forensic state.
-        # UI maps this to 'Encrypted Call (Unanchored)' badge.
+    if protocol_type == "UDP" and port_activity in ("call_media_candidate", "quic_media_or_relay"):
+        if port_activity == "quic_media_or_relay":
+            # UDP/443 QUIC: could be CDN media upload OR TURN relay.
+            # Priority 1: SNI is the strongest signal — trust it directly.
+            if sni_sub_activity in ("video", "media_transfer", "media_generic"):
+                return sni_sub_activity
+            
+            # Priority 2: Directionality — uploads are >70% outbound bytes.
+            # Use explicit client_ip; do NOT infer from packet order.
+            if client_ip:
+                outbound_bytes = sum(p.get("length", 0) for p in packets
+                                     if p.get("src_ip") == client_ip)
+                total_b = sum(p.get("length", 0) for p in packets) or 1
+                outbound_ratio = outbound_bytes / total_b
+            else:
+                outbound_ratio = 0.5  # unknown — treat as symmetric
+                
+            bursts_with_duration = extract_bursts_with_duration(packets)
+            if bursts_with_duration:
+                burst_intensity = max(
+                    sum(p.get("length", 0) for p in b) / span
+                    for b, span in bursts_with_duration
+                )
+                if burst_intensity > 30_000 and outbound_ratio > 0.70:
+                    # High burst + outbound dominant = CDN upload, NOT a call.
+                    # Use the same 1_000_000 byte threshold as Gate 7 for consistency.
+                    total_bytes_local = sum(p.get("length", 0) for p in packets)
+                    if total_bytes_local > 1_000_000:
+                        return "video"
+                    return "photo"
+                if outbound_ratio > 0.70:
+                    # Mostly outbound without extreme burst: photo or audio attachment.
+                    return "media_transfer"
+                    
+            # Check 3: Low-intensity short QUIC flow on confirmed Meta IP = chat/control.
+            # Characteristics of QUIC chat/control:
+            #   - Small total size (< 50 KB)
+            #   - Short duration (< 60 seconds)
+            #   - Roughly balanced send/receive (not upload-dominant)
+            #   - No STUN/ICE patterns
+            total_b_quic = sum(p.get("length", 0) for p in packets)
+            quic_duration = (
+                max(p.get("timestamp", 0) for p in packets)
+                - min(p.get("timestamp", 0) for p in packets)
+            ) or 1.0
+            quic_rate_bps = total_b_quic / quic_duration
+
+            if (cidr_confirmed
+                    and total_b_quic < 50_000   # small flow
+                    and quic_duration < 60.0    # brief channel
+                    and quic_rate_bps < 20_000  # low sustained rate (handshakes can be fast)
+                    and outbound_ratio < 0.70): # not upload-dominant
+                # Small, brief, balanced QUIC on Meta IP = secondary chat/control channel
+                return "message"
+
+            # Bidirectional on UDP/443 with CIDR confirmed → likely TURN relay (call).
+            # Fall through to VoIP bitrate check.
+            if cidr_confirmed:
+                voip = detect_voip_by_bitrate(packets)
+                if voip:
+                    return voip
+            return "call_stream_unresolved"
+
+        # Standard call_media_candidate path (truly dynamic UDP ports, NOT 443).
+        if cidr_confirmed:
+            voip = detect_voip_by_bitrate(packets)
+            if voip:
+                return voip
         return "call_stream_unresolved"
 
     # ── Gate 6: TCP-only CDN path ─────────────────────────────────────────
@@ -698,8 +820,21 @@ def guess_media_type(
                 if total_bytes > 100_000:
                     return 'audio'
                 return 'photo'
-            if flow_duration > 300 and burst_intensity < 2_000:
-                return 'message'
+                
+            # Use median burst intensity, not max. The 'max' is contaminated by the
+            # initial TLS handshake + message sync burst present in every chat session.
+            # Median reflects the dominant (sustained) traffic pattern.
+            sorted_intensities = sorted(
+                sum(p.get('length', 0) for p in b) / span
+                for b, span in bursts_with_duration
+            )
+            median_burst_intensity = sorted_intensities[len(sorted_intensities) // 2]
+        else:
+            median_burst_intensity = 0.0
+            
+        # >= 300 (not >300): 5-minute captures are exactly 300.0s
+        if flow_duration >= 300 and median_burst_intensity < 2_000:
+            return 'message'
 
     # ── Gate 8: Size-based fallback — ONLY if Meta CIDR confirmed ─────────
     # Fix B: Generic HTTPS traffic (banking, CDNs, OS updates) spans the
@@ -708,6 +843,20 @@ def guess_media_type(
     if not cidr_confirmed:
         # No SNI + no CIDR + no dedicated port = cannot classify as WA media
         return 'unclassified'
+
+    # Gate 8 Pre-check: Compute effective byte rate (bytes/second).
+    # A text chat accumulating 79 KB over 5 minutes ≈ 263 B/s.
+    # A photo upload delivering 79 KB in 1.6 seconds ≈ 49,375 B/s.
+    # This single value separates long-lived chat from short media bursts.
+    effective_rate_bps = total_bytes / max(flow_duration, 1.0)
+
+    # Long-lived, low-rate TCP flow on confirmed Meta IP = persistent chat session.
+    # Threshold anchors:
+    #   - WhatsApp voice note streaming: ~4,000 B/s (32 kbps Opus)
+    #   - Text chat keepalive regime: < 500 B/s
+    #   - Small photo upload: > 10,000 B/s even for a 100 KB photo over 10s
+    if protocol_type == "TCP" and flow_duration >= 60 and effective_rate_bps < 5_000:
+        return 'message'
 
     if total_bytes < 10_000:
         # Fix D: small flow on confirmed Meta IP — could be keep-alive or
