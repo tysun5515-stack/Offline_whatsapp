@@ -140,6 +140,106 @@ def init_analysis_db():
             bypass_mode         INTEGER DEFAULT 0,
             total_raw_packets   INTEGER DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS crypto_flows (
+            flow_id                   TEXT PRIMARY KEY,
+            upload_id                 TEXT NOT NULL,
+            batch_id                  TEXT NOT NULL,
+            transport                 TEXT,
+            ip_version                INTEGER,
+            server_ip                 TEXT,
+            server_port               INTEGER,
+            client_ip                 TEXT,
+            client_port               INTEGER,
+            server_name               TEXT,
+            name_source               TEXT,
+            direction_coverage        TEXT,
+            start_seen                INTEGER DEFAULT 0,
+            client_hello_complete     INTEGER DEFAULT 0,
+            server_hello_complete     INTEGER DEFAULT 0,
+            hrr_seen                  INTEGER DEFAULT 0,
+            sh_is_hrr_only            INTEGER DEFAULT 0,
+            evidence_tier             INTEGER,
+            ch_frame_no               INTEGER,
+            ch_legacy_version         TEXT,
+            ch_cipher_suites_json     TEXT,
+            ch_supported_groups_json  TEXT,
+            ch_key_share_groups_json  TEXT,
+            ch_key_share_lens_json    TEXT,
+            ch_sig_algs_json          TEXT,
+            ch_ext_ids_json           TEXT,
+            ch_alpn_json              TEXT,
+            ch_has_sni                INTEGER DEFAULT 0,
+            ch_has_ech                INTEGER DEFAULT 0,
+            ch_has_psk                INTEGER DEFAULT 0,
+            ch_ja3                    TEXT,
+            sh_frame_no               INTEGER,
+            sh_neg_version            TEXT,
+            sh_cipher                 TEXT,
+            sh_cipher_name            TEXT,
+            sh_key_share_group        TEXT,
+            sh_key_share_group_name   TEXT,
+            sh_key_share_len          INTEGER,
+            sh_psk_selected           INTEGER DEFAULT 0,
+            sh_is_hrr                 INTEGER DEFAULT 0,
+            sh_ja3s                   TEXT,
+            neg_kex_mode              TEXT,
+            neg_group                 TEXT,
+            neg_group_name            TEXT,
+            neg_group_class           TEXT,
+            neg_cipher                TEXT,
+            neg_cipher_name           TEXT,
+            neg_resumed               INTEGER DEFAULT 0,
+            pqc_capability            INTEGER DEFAULT 0,
+            pqc_key_share_offered     INTEGER DEFAULT 0,
+            pqc_server_selected       INTEGER DEFAULT 0,
+            pqc_state                 TEXT,
+            pqc_basis                 TEXT,
+            wa_ephemeral_key_len      INTEGER,
+            wa_static_len             INTEGER,
+            wa_payload_len            INTEGER,
+            wa_max_opaque_len         INTEGER,
+            wa_pattern_hint           TEXT,
+            flag_offers_cbc           INTEGER DEFAULT 0,
+            flag_offers_rsa_kex       INTEGER DEFAULT 0,
+            flag_offers_sha1_sig      INTEGER DEFAULT 0,
+            flag_offers_tls12         INTEGER DEFAULT 0,
+            flag_negotiated_legacy    INTEGER DEFAULT 0,
+            quic_version              TEXT,
+            quic_dcid                 TEXT,
+            quic_scid                 TEXT,
+            first_seen                REAL,
+            last_seen                 REAL,
+            duration_s                REAL,
+            total_packets             INTEGER,
+            total_bytes               INTEGER,
+            extractor_version         TEXT DEFAULT '1.0.0',
+            registry_version          TEXT DEFAULT '2026-09',
+            classification            TEXT,
+            whatsapp_confidence       TEXT,
+            kex_class                 TEXT,
+            size_mismatch             INTEGER DEFAULT 0,
+            unknown_groups_json       TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_crypto_flows_upload  ON crypto_flows(upload_id);
+        CREATE INDEX IF NOT EXISTS idx_crypto_flows_batch   ON crypto_flows(batch_id);
+        CREATE INDEX IF NOT EXISTS idx_crypto_flows_server  ON crypto_flows(server_name, server_ip);
+        CREATE INDEX IF NOT EXISTS idx_crypto_flows_pqc     ON crypto_flows(pqc_state);
+
+        CREATE TABLE IF NOT EXISTS crypto_events (
+            event_id       TEXT PRIMARY KEY,
+            flow_id        TEXT NOT NULL,
+            upload_id      TEXT NOT NULL,
+            frame_no       INTEGER,
+            ts             REAL,
+            direction      TEXT,
+            msg_type       TEXT,
+            raw_fields_json TEXT,
+            ext_ids_json   TEXT,
+            bytes_len      INTEGER,
+            FOREIGN KEY (flow_id) REFERENCES crypto_flows(flow_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_crypto_events_flow ON crypto_events(flow_id);
     """)
     try:
         conn.execute("ALTER TABLE parties ADD COLUMN media_breakdown TEXT")
@@ -224,6 +324,36 @@ def init_analysis_db():
         except Exception:
             pass
             
+    # Add migration for crypto_status column
+    try:
+        conn.execute("ALTER TABLE analysis_flows_v2 ADD COLUMN crypto_status TEXT DEFAULT 'not_run'")
+    except Exception:
+        pass
+        
+    # Add migrations for classification and whatsapp_confidence in crypto_flows
+    try:
+        conn.execute("ALTER TABLE crypto_flows ADD COLUMN classification TEXT")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE crypto_flows ADD COLUMN whatsapp_confidence TEXT")
+    except Exception:
+        pass
+        
+    for col in [
+        "ALTER TABLE crypto_flows ADD COLUMN kex_class TEXT",
+        "ALTER TABLE crypto_flows ADD COLUMN size_mismatch INTEGER DEFAULT 0",
+        "ALTER TABLE crypto_flows ADD COLUMN unknown_groups_json TEXT",
+        "ALTER TABLE crypto_flows ADD COLUMN sh_is_hrr_only INTEGER DEFAULT 0",
+    ]:
+        try:
+            conn.execute(col)
+        except Exception:
+            pass
+        
+    # Null out stale tls_crypto_info data
+    conn.execute("UPDATE whatsapp_packets SET tls_crypto_info = NULL WHERE tls_crypto_info IS NOT NULL")
+
     # Add indexes for performance
     conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_upload ON whatsapp_packets(upload_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_packets_ts ON whatsapp_packets(timestamp)")
@@ -701,6 +831,8 @@ def clear_batch_analysis(batch_id: str):
     conn.executemany("DELETE FROM analysis_flows_v2 WHERE upload_id = ?", [(uid,) for uid in upload_ids])
     conn.executemany("DELETE FROM party_flow_links_v2 WHERE party_id = ?", [(pid,) for pid in party_ids])
     conn.executemany("DELETE FROM session_flow_links_v2 WHERE session_id = ?", [(sid,) for sid in session_ids])
+    conn.executemany("DELETE FROM crypto_events WHERE upload_id = ?", [(uid,) for uid in upload_ids])
+    conn.execute("DELETE FROM crypto_flows WHERE batch_id = ?", (batch_id,))
     conn.execute("DELETE FROM whatsapp_packets WHERE batch_id = ?", (batch_id,))
     conn.execute("DELETE FROM parties WHERE batch_id = ?", (batch_id,))
     conn.execute("DELETE FROM sessions WHERE batch_id = ?", (batch_id,))
@@ -714,6 +846,113 @@ def clear_upload_packets(upload_id: str) -> None:
     if flow_ids:
         conn.executemany('DELETE FROM party_flow_links_v2 WHERE flow_id = ?', [(fid,) for fid in flow_ids])
         conn.executemany('DELETE FROM session_flow_links_v2 WHERE flow_id = ?', [(fid,) for fid in flow_ids])
+    conn.execute('DELETE FROM crypto_events WHERE upload_id = ?', (upload_id,))
+    conn.execute('DELETE FROM crypto_flows WHERE upload_id = ?', (upload_id,))
     conn.execute('DELETE FROM analysis_flows_v2 WHERE upload_id = ?', (upload_id,))
     conn.execute('DELETE FROM whatsapp_packets WHERE upload_id = ?', (upload_id,))
     conn.commit(); conn.close()
+
+
+def insert_crypto_flows(batch_id: str, upload_id: str, flows: List[Dict[str, Any]], events: List[Dict[str, Any]]) -> None:
+    conn = _connect()
+    
+    if not flows:
+        conn.close()
+        return
+
+    columns = list(flows[0].keys())
+    # Ensure mandatory fields
+    for f in flows:
+        f['batch_id'] = batch_id
+        f['upload_id'] = upload_id
+    if 'batch_id' not in columns: columns.append('batch_id')
+    if 'upload_id' not in columns: columns.append('upload_id')
+
+    placeholders = ', '.join(['?'] * len(columns))
+    sql = f"INSERT OR REPLACE INTO crypto_flows ({', '.join(columns)}) VALUES ({placeholders})"
+    
+    conn.executemany(sql, [[f.get(col) for col in columns] for f in flows])
+
+    if events:
+        evt_cols = list(events[0].keys())
+        for e in events:
+            e['upload_id'] = upload_id
+        if 'upload_id' not in evt_cols: evt_cols.append('upload_id')
+        
+        evt_placeholders = ', '.join(['?'] * len(evt_cols))
+        evt_sql = f"INSERT OR REPLACE INTO crypto_events ({', '.join(evt_cols)}) VALUES ({evt_placeholders})"
+        conn.executemany(evt_sql, [[e.get(col) for col in evt_cols] for e in events])
+        
+    # Mark crypto_status as ok for these flows in analysis_flows_v2
+    flow_ids = [f.get('flow_id') for f in flows if f.get('flow_id')]
+    if flow_ids:
+        marks = ','.join('?' for _ in flow_ids)
+        conn.execute(f"UPDATE analysis_flows_v2 SET crypto_status = 'ok' WHERE flow_id IN ({marks})", flow_ids)
+
+    conn.commit()
+    conn.close()
+
+
+def get_crypto_flows(upload_id: Optional[str] = None, batch_id: Optional[str] = None, pqc_state: Optional[str] = None) -> List[Dict[str, Any]]:
+    conn = _connect()
+    query = "SELECT * FROM crypto_flows WHERE 1=1"
+    params = []
+    if upload_id:
+        query += " AND upload_id = ?"
+        params.append(upload_id)
+    if batch_id:
+        query += " AND batch_id = ?"
+        params.append(batch_id)
+    if pqc_state:
+        query += " AND pqc_state = ?"
+        params.append(pqc_state)
+        
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_crypto_events(flow_id: str) -> List[Dict[str, Any]]:
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM crypto_events WHERE flow_id = ? ORDER BY frame_no ASC",
+        (flow_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_crypto_summary(batch_id: str) -> Dict[str, Any]:
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT pqc_state, count(*) as count FROM crypto_flows WHERE batch_id = ? GROUP BY pqc_state",
+        (batch_id,)
+    ).fetchall()
+    
+    total = conn.execute("SELECT count(*) FROM crypto_flows WHERE batch_id = ?", (batch_id,)).fetchone()[0]
+    legacy_flags = conn.execute(
+        "SELECT count(*) FROM crypto_flows WHERE batch_id = ? AND (flag_offers_cbc=1 OR flag_offers_rsa_kex=1 OR flag_offers_sha1_sig=1)",
+        (batch_id,)
+    ).fetchone()[0]
+    
+    conn.close()
+    
+    summary = {
+        'total_flows': total,
+        'analyzed_flows': total,
+        'legacy_ciphers': legacy_flags,
+        'pqc_server_selected': 0,
+        'pqc_key_share_offered': 0,
+        'pqc_not_observed': 0,
+        'states': {}
+    }
+    for r in rows:
+        summary['states'][r['pqc_state']] = r['count']
+        if r['pqc_state'] == 'server_selected':
+            summary['pqc_server_selected'] = r['count']
+        elif r['pqc_state'] == 'key_share_offered':
+            summary['pqc_key_share_offered'] = r['count']
+        elif r['pqc_state'] == 'not_observed':
+            summary['pqc_not_observed'] = r['count']
+        
+    return summary

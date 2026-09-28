@@ -1,0 +1,307 @@
+{
+  "job_id": "10fe8e39-af6d-4364-a1f5-d6039a8b94da",
+  "status": "completed",
+  "progress_pct": 100.0,
+  "total_files": 48,
+  "processed_files": 48,
+  "upload_ids": [
+    "8e8efdd4-9a14-4134-bf0d-93478ea0f3a1",
+    "24700a6b-b65c-499f-9abb-b782ca179527",
+    "397fbfdc-90a8-4070-a682-823eb1c82805",
+    "dda4cd53-5d66-4889-ab27-2374971f46bb",
+    "6a52d5b5-d478-44c1-bd19-e9ea52c1f46d",
+    "6f98f08d-0e6b-4aa7-a71c-db644cacbb5e",
+    "bcbd236a-eda7-424f-98cc-7bc671b41060",
+    "40feef2f-2f39-4549-abdd-3ad94cbcebd9",
+    "807708a9-e313-4659-a418-6cc305330da7",
+    "69167d25-7808-44a2-96bb-7f7b70aa5bf8",
+    "b8aca062-3b6f-4544-af74-8fd443c34448",
+    "f2387989-9c96-4320-a1ed-ec5cfff1fc7f",
+    "d421e220-54ea-4e24-bf92-a872387c63ff",
+    "bd3b7d1c-57bf-4d58-b93c-78368c911d50",
+    "cf2d5be1-8be4-40ef-a5b2-beb325f7932d",
+    "bba1e538-b4f0-49ad-968a-c792501da92c",
+    "edc0d9d2-bb30-4fed-b1d9-20540545c5de",
+    "eff8a78f-1d7b-4ecc-a0c6-4e60bc37b05e",
+    "9c6b9118-5e13-4935-b1c6-8870022f3173",
+    "f1e66667-7b38-4a28-92d1-bb4747bcc649",
+    "4bb924f7-eebe-4cc7-9bb2-b884fdfbf2af",
+    "c155bb85-a8d5-4b06-96a7-fb055913f17b",
+    "f1796381-00ba-41b0-a12c-37a659c0fa59",
+    "9cc65efd-5243-4320-91bc-ec65f9910412",
+    "902d1a75-e52b-423f-962c-565d881857e2",
+    "65887280-5567-4a32-a48d-b9638cf6af94",
+    "ec8b4494-301f-40c7-91fc-d0dffb5c947f",
+    "e825efeb-a42b-4c05-a5cd-84937107aa9f",
+    "cd22b731-2c2e-4b95-bf9b-5108d66b3bfd",
+    "1b917c9e-bef9-45c8-a9bb-1c7898d91856",
+    "0bf669d9-4680-4f78-86dc-56701cf6f6c8",
+    "fce98aaf-9ac6-4231-9270-59968921ac83",
+    "f5179daf-0258-4a06-a65b-03d8d265ead3",
+    "2132c74f-7ac7-4c17-af22-4ddd2dd50fd4",
+    "331cfe20-0c76-4c80-9d57-50391d4c4cd4",
+    "c6968566-9844-48d9-9a2b-693ead9ca63b",
+    "4fe98e5c-d3ce-4967-859a-e7cc2037b1ac",
+    "1e5dba07-8041-4e9f-976a-9c28a41e9a5a",
+    "4d3733ef-4267-4c93-b64b-e629575445f7",
+    "96763e07-61af-4db8-9d57-79b562e4f5db",
+    "35fc65cb-2a48-4b92-a3a5-c442ba536f32",
+    "b552efc9-79a9-4733-9164-faa34ae20dee",
+    "3836e469-1226-42cc-8682-fabea5ccbed1",
+    "6943b9c6-8fdb-4b8d-922f-6a842fd9b5d9",
+    "e00b9aa0-2939-4902-a582-fc4a3f508371",
+    "6a5fd63a-ed9a-4810-b985-871fa4d0d594",
+    "fa38cac3-27db-46ec-b3ba-1fb359413d10",
+    "f6598dc2-fce5-46bd-b2a6-893ceb1e4b9f"
+  ],
+  "errors": [],
+  "outcomes": [
+    {
+      "upload_id": "8e8efdd4-9a14-4134-bf0d-93478ea0f3a1",
+      "filename": "mi2000018cd2311ca55d779.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "24700a6b-b65c-499f-9abb-b782ca179527",
+      "filename": "mi2000018cd2311ca575830.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "397fbfdc-90a8-4070-a682-823eb1c82805",
+      "filename": "mi2000018cd2311ca5c0879.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "dda4cd53-5d66-4889-ab27-2374971f46bb",
+      "filename": "mi2000018cd2311ca72687b.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "6a52d5b5-d478-44c1-bd19-e9ea52c1f46d",
+      "filename": "mi2000018cd2311ca94f2eb.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "6f98f08d-0e6b-4aa7-a71c-db644cacbb5e",
+      "filename": "mi2000018cd2311cabb68cf.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "bcbd236a-eda7-424f-98cc-7bc671b41060",
+      "filename": "mi2007318c8acbd4dde22ee.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "40feef2f-2f39-4549-abdd-3ad94cbcebd9",
+      "filename": "mi2007418c6b0e39f92062e.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "807708a9-e313-4659-a418-6cc305330da7",
+      "filename": "mi2007418c6b0e39f9ac1c5.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "69167d25-7808-44a2-96bb-7f7b70aa5bf8",
+      "filename": "mi2007418c6b0e39fa26a61.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "b8aca062-3b6f-4544-af74-8fd443c34448",
+      "filename": "mi2007418c6b0e39fa5a50f.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "f2387989-9c96-4320-a1ed-ec5cfff1fc7f",
+      "filename": "mi2007418c6b0e39fa91068.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "d421e220-54ea-4e24-bf92-a872387c63ff",
+      "filename": "mi2007418c6b0e39fb8ee9e.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "bd3b7d1c-57bf-4d58-b93c-78368c911d50",
+      "filename": "mi2007418c6b0e39fb8f796.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "cf2d5be1-8be4-40ef-a5b2-beb325f7932d",
+      "filename": "mi2007418c6b0e39fbbe893.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "bba1e538-b4f0-49ad-968a-c792501da92c",
+      "filename": "mi2007418c6b0e39fbcb563.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "edc0d9d2-bb30-4fed-b1d9-20540545c5de",
+      "filename": "mi2007418c6b0e39fc9064b.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "eff8a78f-1d7b-4ecc-a0c6-4e60bc37b05e",
+      "filename": "mi2007418c6b0e39fd1a01f.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "9c6b9118-5e13-4935-b1c6-8870022f3173",
+      "filename": "mi2007418c6b0e39fd59e22.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "f1e66667-7b38-4a28-92d1-bb4747bcc649",
+      "filename": "mi2007418c6b0e39fdaea9b.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "4bb924f7-eebe-4cc7-9bb2-b884fdfbf2af",
+      "filename": "mi2007418c6b0e39fe41db9.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "c155bb85-a8d5-4b06-96a7-fb055913f17b",
+      "filename": "mi2007418c6b0e39fe4728e.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "f1796381-00ba-41b0-a12c-37a659c0fa59",
+      "filename": "mi2007418c6b0e39fea4d42.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "9cc65efd-5243-4320-91bc-ec65f9910412",
+      "filename": "mi2007418c6b0e39feaaf61.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "902d1a75-e52b-423f-962c-565d881857e2",
+      "filename": "mi2007418c6b0e3a0e70b10.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "65887280-5567-4a32-a48d-b9638cf6af94",
+      "filename": "mi2007418c6b0e3a0e8a745.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "ec8b4494-301f-40c7-91fc-d0dffb5c947f",
+      "filename": "mi2007418c6b0e3a0ea6a27.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "e825efeb-a42b-4c05-a5cd-84937107aa9f",
+      "filename": "mi2007418c6b0e3a0f26067.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "cd22b731-2c2e-4b95-bf9b-5108d66b3bfd",
+      "filename": "mi2007618c8acbca8ff0bf0.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "1b917c9e-bef9-45c8-a9bb-1c7898d91856",
+      "filename": "mi2007618c8acbca905d48f.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "0bf669d9-4680-4f78-86dc-56701cf6f6c8",
+      "filename": "mi2007618c8acbcaa482675.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "fce98aaf-9ac6-4231-9270-59968921ac83",
+      "filename": "mi2007718c8acbc3e8f605f.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "f5179daf-0258-4a06-a65b-03d8d265ead3",
+      "filename": "mi2007718c8acbc3e9ec0f2.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "2132c74f-7ac7-4c17-af22-4ddd2dd50fd4",
+      "filename": "mi2007918c8acbc5119fc75.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "331cfe20-0c76-4c80-9d57-50391d4c4cd4",
+      "filename": "mi2007a18c8acbbce902aff.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "c6968566-9844-48d9-9a2b-693ead9ca63b",
+      "filename": "mi2007a18c8acbbced73caa.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "4fe98e5c-d3ce-4967-859a-e7cc2037b1ac",
+      "filename": "mi2007a18c8acbbced8795f.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "1e5dba07-8041-4e9f-976a-9c28a41e9a5a",
+      "filename": "mi2007c18c8acba1c71449c.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "4d3733ef-4267-4c93-b64b-e629575445f7",
+      "filename": "mi2007c18c8acba1c738807.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "96763e07-61af-4db8-9d57-79b562e4f5db",
+      "filename": "mi2007c18c8acba1c869ed2.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "35fc65cb-2a48-4b92-a3a5-c442ba536f32",
+      "filename": "mi2007c18c8acba1cb16756.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "b552efc9-79a9-4733-9164-faa34ae20dee",
+      "filename": "mi2007c18c8acba1cb3bb03.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "3836e469-1226-42cc-8682-fabea5ccbed1",
+      "filename": "mi2007d18c8acbbe44e3aba.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "6943b9c6-8fdb-4b8d-922f-6a842fd9b5d9",
+      "filename": "mi2007e18c8acbb5a021bbe.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "e00b9aa0-2939-4902-a582-fc4a3f508371",
+      "filename": "mi2007e18c8acbb5a456ed2.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "6a5fd63a-ed9a-4810-b985-871fa4d0d594",
+      "filename": "mi2007f18c8acbd7a263939.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "fa38cac3-27db-46ec-b3ba-1fb359413d10",
+      "filename": "mi2007f18c8acbd7a2752c3.pcap",
+      "status": "filtered_output_created"
+    },
+    {
+      "upload_id": "f6598dc2-fce5-46bd-b2a6-893ceb1e4b9f",
+      "filename": "mi2008418c8acbaaa2e3d73.pcap",
+      "status": "filtered_output_created"
+    }
+  ],
+  "stats": {
+    "packet_count": 705,
+    "flow_count": 48,
+    "whatsapp_count": 705,
+    "bypass_mode": false,
+    "total_raw_packets": 705
+  }
+}

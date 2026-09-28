@@ -80,7 +80,7 @@ def _process_filter_job(job_id: str, upload_ids: List[str], skip_filter: bool):
 
 def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: bool):
     from src.webapp.db_registry import get_upload, update_filtered_evidence, remove_filtered_evidence, update_status
-    from src.webapp.db_analysis import insert_whatsapp_packets, clear_upload_packets
+    from src.webapp.db_analysis import insert_whatsapp_packets, clear_upload_packets, insert_crypto_flows
     from src.pipeline import process_pcap_to_whatsapp_packets
     from src.capture_evidence import write_filtered_capture
     import time
@@ -123,7 +123,7 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                 raw_subscribers = upload.get('subscriber_ips') or ''
                 if isinstance(raw_subscribers, str):
                     subscriber_ips = [ip.strip() for ip in raw_subscribers.split(',') if ip.strip()]
-                stats, packets, _ = process_pcap_to_whatsapp_packets(
+                stats, packets, _, crypto_data = process_pcap_to_whatsapp_packets(
                     upload['stored_path'],
                     keep_all_traffic=skip_filter,
                     capture_id=upload_id,
@@ -141,7 +141,10 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                 destination = _filtered_path(upload_id, upload['filename'], upload.get('file_format'))
                 if os.path.exists(destination):
                     os.remove(destination)
-                written = write_filtered_capture(upload['stored_path'], destination, packet_numbers, upload.get('file_format'), stats.get('packet_count'))
+                if packet_numbers:
+                    written = write_filtered_capture(upload['stored_path'], destination, packet_numbers, upload.get('file_format'), stats.get('packet_count'))
+                else:
+                    written = 0
                 if written:
                     update_filtered_evidence(upload_id, destination, upload.get('file_format'), written, 'filtered_output_created')
                 else:
@@ -150,8 +153,19 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                 
             if not skip_filter and packets and upload.get('file_format') not in ('json', 'csv') and os.path.isfile(destination):
                 insert_whatsapp_packets(upload_id, upload_id, upload['filename'], packets)
+                
+            if upload.get('file_format') not in ('json', 'csv') and 'crypto_data' in locals():
+                c_flows, c_events = crypto_data
+                if c_flows:
+                    insert_crypto_flows(upload.get('batch_id') or upload_id, upload_id, c_flows, c_events)
             
             update_status(upload_id, 'filtered')
+            from src.webapp.crypto_service import enabled as crypto_enabled, analyze as analyze_crypto
+            if crypto_enabled() and not skip_filter and upload.get('file_format') in ('pcap', 'pcapng'):
+                try:
+                    analyze_crypto(upload_id)
+                except Exception as exc:
+                    job_data['errors'].append(f"{upload['filename']}: crypto: {exc}")
             job_data.setdefault('outcomes', []).append({
                 'upload_id': upload_id,
                 'filename': upload['filename'],

@@ -1,0 +1,25 @@
+{
+  "job_id": "23185096-8cf0-4e2f-a6ca-db82164a92ac",
+  "status": "completed",
+  "progress_pct": 100.0,
+  "total_files": 1,
+  "processed_files": 1,
+  "upload_ids": [
+    "8e894d4b-2018-44e9-8bad-34702518a241"
+  ],
+  "errors": [],
+  "outcomes": [
+    {
+      "upload_id": "8e894d4b-2018-44e9-8bad-34702518a241",
+      "filename": "mi2007718a8b2b55fddf2d4_1_WF.pcap",
+      "status": "filtered_output_created"
+    }
+  ],
+  "stats": {
+    "packet_count": 203,
+    "flow_count": 1,
+    "whatsapp_count": 203,
+    "bypass_mode": false,
+    "total_raw_packets": 203
+  }
+}

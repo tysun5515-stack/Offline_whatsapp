@@ -85,6 +85,7 @@
 
 <a class="{% if active_interface == 2 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('interface2', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-filter w-5 mr-3"></i>Filter Traffic</a>
 <a class="{% if active_interface == 7 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('classification', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-magnifying-glass-chart w-5 mr-3"></i>Classification</a>
+<a class="{% if active_interface == 8 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('flow_inspection', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-network-wired w-5 mr-3"></i>Flow Deep Inspection</a>
 <a class="{% if active_interface == 3 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('interface3', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-chart-simple w-5 mr-3"></i>Core Analysis</a>
 <a class="{% if active_interface == 5 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('interface5', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-file-lines w-5 mr-3"></i>Report Generation</a>
 <a class="{% if active_interface == 6 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('evidence_storage', view='raw', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-hard-drive w-5 mr-3"></i>Evidence Storage</a>
@@ -162,7 +163,7 @@
 
 <!-- BEGIN: Dashboard Content -->
 <div class="p-6 space-y-6">
-  {% if active_interface in [0, 2, 3, 5, 7] %}
+  {% if active_interface in [0, 2, 3, 5, 7, 8] %}
   <form id="capture-range-form" method="get" class="bg-white border border-gray-200 rounded-lg px-4 py-3 flex flex-wrap items-end gap-3 text-sm shadow-sm">
     <div><label class="block text-xs font-medium text-gray-500 mb-1">Capture from (IST)</label><input name="capture_from" type="date" value="{{ capture_from }}" class="border rounded px-2 py-1.5"></div>
     <div><label class="block text-xs font-medium text-gray-500 mb-1">Capture to (IST)</label><input name="capture_to" type="date" value="{{ capture_to }}" class="border rounded px-2 py-1.5"></div>

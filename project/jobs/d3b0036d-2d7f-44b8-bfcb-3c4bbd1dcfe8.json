@@ -1,0 +1,15 @@
+{
+  "job_id": "d3b0036d-2d7f-44b8-bfcb-3c4bbd1dcfe8",
+  "status": "completed",
+  "progress_pct": 100.0,
+  "total_files": 48,
+  "processed_files": 48,
+  "errors": [],
+  "stats": {
+    "packet_count": 705,
+    "flow_count": 48,
+    "whatsapp_count": 705,
+    "bypass_mode": false,
+    "total_raw_packets": 705
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "job_id": "958472d5-c80b-46fd-9aaa-7b1a53c83d80",
+  "status": "completed",
+  "progress_pct": 100.0,
+  "total_files": 1,
+  "processed_files": 1,
+  "upload_ids": [
+    "a8cff70c-392d-459f-bc00-e4eea4bd1272"
+  ],
+  "errors": [],
+  "outcomes": [
+    {
+      "upload_id": "a8cff70c-392d-459f-bc00-e4eea4bd1272",
+      "filename": "text_chat_nothing3a_wifi_001.pcap",
+      "status": "filtered_output_created"
+    }
+  ],
+  "stats": {
+    "packet_count": 665,
+    "flow_count": 8,
+    "whatsapp_count": 661,
+    "bypass_mode": false,
+    "total_raw_packets": 665
+  }
+}

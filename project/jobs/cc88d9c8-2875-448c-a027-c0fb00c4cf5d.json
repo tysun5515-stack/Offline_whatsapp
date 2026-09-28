@@ -1,0 +1,27 @@
+{
+  "job_id": "cc88d9c8-2875-448c-a027-c0fb00c4cf5d",
+  "status": "completed_with_errors",
+  "progress_pct": 100.0,
+  "total_files": 1,
+  "processed_files": 1,
+  "upload_ids": [
+    "94ecad92-c30b-42e3-a159-e39cdb88ee8b"
+  ],
+  "errors": [
+    "text_chat_nothing3a_wifi_001.pcap: crypto: UNIQUE constraint failed: crypto_evidence_v3.event_id"
+  ],
+  "outcomes": [
+    {
+      "upload_id": "94ecad92-c30b-42e3-a159-e39cdb88ee8b",
+      "filename": "text_chat_nothing3a_wifi_001.pcap",
+      "status": "filtered_output_created"
+    }
+  ],
+  "stats": {
+    "packet_count": 665,
+    "flow_count": 8,
+    "whatsapp_count": 661,
+    "bypass_mode": false,
+    "total_raw_packets": 665
+  }
+}

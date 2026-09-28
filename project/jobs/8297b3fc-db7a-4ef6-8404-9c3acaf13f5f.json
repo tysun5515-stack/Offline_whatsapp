@@ -1,0 +1,25 @@
+{
+  "job_id": "8297b3fc-db7a-4ef6-8404-9c3acaf13f5f",
+  "status": "completed",
+  "progress_pct": 100.0,
+  "total_files": 1,
+  "processed_files": 1,
+  "upload_ids": [
+    "e3b47516-fc74-4674-a21f-05f02f278229"
+  ],
+  "errors": [],
+  "outcomes": [
+    {
+      "upload_id": "e3b47516-fc74-4674-a21f-05f02f278229",
+      "filename": "voice_call_transfer_nothing3a_wifi_001.pcap",
+      "status": "filtered_output_created"
+    }
+  ],
+  "stats": {
+    "packet_count": 4493,
+    "flow_count": 26,
+    "whatsapp_count": 3906,
+    "bypass_mode": false,
+    "total_raw_packets": 4493
+  }
+}

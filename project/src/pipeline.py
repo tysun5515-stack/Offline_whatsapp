@@ -82,7 +82,6 @@ def _emit_flow_packets(
             p["is_infrastructure"] = True
             p["whatsapp_confidence"] = "infrastructure"
         p["tls_cipher_suite"] = p.get("tls_cipher_suite")
-        p["tls_crypto_info"] = p.get("tls_crypto_info")
         p["quic_version"] = p.get("quic_version")
         p["flow_id"] = str(flow["flow_id"])
         p["flow_instance"] = flow.get("flow_instance")
@@ -102,10 +101,10 @@ def process_pcap_to_whatsapp_packets(
     keep_all_traffic: bool = False,
     capture_id: Optional[str] = None,
     explicit_subscriber_ips: Optional[List[str]] = None,
-) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]], Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
     """
     Runs the core parsing and filtering pipeline.
-    Returns (stats_dict, all_classified_packets, all_flows).
+    Returns (stats_dict, all_classified_packets, all_flows, crypto_data).
     Designed to be called by the forensic web UI.
     """
     # 1. Parse packets
@@ -132,6 +131,7 @@ def process_pcap_to_whatsapp_packets(
         explicit_subscriber_ips=explicit_subscriber_ips,
     )
     
+
     # 3. Classify flows using the established evidence rules.
     dns_index = _dns_correlation_index(packet_records)
     registry = ConfirmedServerRegistry(pcap_id=os.path.basename(pcap_path))
@@ -155,8 +155,6 @@ def process_pcap_to_whatsapp_packets(
         # High confidence triggers seed the registry
         if conf_domain == "high" or conf_cidr == "high" or conf_port == "high" or dns_correlation:
             registry.seed(inference_ip)
-    all_whatsapp_packets = []
-    whatsapp_flow_count = 0
     
     # PASS 2: Re-evaluate and extract all packets using fully seeded registry
     for flow in flows:
@@ -312,6 +310,15 @@ def process_pcap_to_whatsapp_packets(
     rejected_no_signal_count = len(packet_records) - len(all_whatsapp_packets) - non_ip_count - ip_packets_with_no_flow
     reconciliation_ok = (pass1_accepted_count + pass2_accepted_count + rejected_no_signal_count + non_ip_count + ip_packets_with_no_flow == len(packet_records))
     
+    # NEW — crypto analysis pass (runs after classification so tags are present)
+    try:
+        from src.tls_crypto_analyzer import extract_crypto_flows
+        crypto_data = extract_crypto_flows(flows, upload_id=capture_id or os.path.basename(pcap_path))
+    except Exception as _crypto_err:
+        import logging
+        logging.warning(f"Crypto analysis skipped: {_crypto_err}")
+        crypto_data = ([], [])  # empty flows, empty events
+    
     stats = {
         'packet_count': len(packet_records),
         'total_raw_packets': len(packet_records),
@@ -329,7 +336,7 @@ def process_pcap_to_whatsapp_packets(
         'reconciliation_ok': reconciliation_ok,
     }
     
-    return stats, all_whatsapp_packets, flows
+    return stats, all_whatsapp_packets, flows, crypto_data
 
 
 def run_pipeline(pcap_path, output_dir):
@@ -337,7 +344,7 @@ def run_pipeline(pcap_path, output_dir):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
             
-        stats, all_whatsapp_packets, flows = process_pcap_to_whatsapp_packets(pcap_path)
+        stats, all_whatsapp_packets, flows, crypto_data = process_pcap_to_whatsapp_packets(pcap_path)
         
         # We don't save CSVs or write to old DB in the new architecture,
         # but for legacy compatibility we can just print stats.

@@ -526,6 +526,17 @@ def create_app():
                                selected_view=selected_view, selected_upload_id=selected_upload_id,
                                range_error=range_error, scope_evidence=uploads, default_scope=default_scope,
                                all_packet_count=sum(int(item.get('packet_count') or 0) for item in files))
+
+    @app.route('/interface/flow-inspection')
+    def flow_inspection():
+        """Standalone Flow Deep Inspection page."""
+        start_ts, end_ts, range_error, uploads, default_scope = _filtered_scope()
+        batch_id = uploads[0]['batch_id'] if uploads else None
+        return render_template('flow_inspection.html', active_interface=8, 
+                               uploads=uploads, batch_id=batch_id,
+                               range_error=range_error, scope_evidence=uploads,
+                               default_scope=default_scope)
+    
     @app.route('/interface/1')
     def interface1():
         uploads = list_uploads()
@@ -962,22 +973,62 @@ def create_app():
             traceback.print_exc()
             return jsonify({'error': str(e)}), 500
 
-    # DEEP_ANALYSIS_DISABLED
-    # @app.route('/api/deep_analyze/<batch_id>', methods=['POST'])
-    # def api_deep_analyze(batch_id):
-    #     from src.timeline_builder import build_sessions
-    #     try:
-    #         packets = get_packets(batch_id)
-    #         parties = get_parties(batch_id)
-    #         
-    #         sessions = build_sessions(batch_id, packets, parties)
-    #         insert_sessions(batch_id, sessions)
-    #         return jsonify({'status': 'success', 'sessions_created': len(sessions)})
-    #     except Exception as e:
-    #         import traceback
-    #         traceback.print_exc()
-    #         return jsonify({'error': str(e)}), 500
+    @app.route('/api/crypto_flows/<batch_id>')
+    @app.route('/api/crypto/flows', defaults={'batch_id': None})
+    def api_crypto_flows(batch_id):
+        start, end, error, uploads, default = _filtered_scope()
+        if error:
+            return jsonify(error=error), 400
+        upload_ids = [u['upload_id'] for u in uploads]
+        if not upload_ids:
+            return jsonify(status='success', flows=[], summary={})
+        
+        from src.webapp.db_analysis import get_crypto_flows, get_crypto_summary, _connect
+        import json
+        conn = _connect()
+        marks = ','.join('?' for _ in upload_ids)
+        flows = [dict(r) for r in conn.execute(
+            f'SELECT * FROM crypto_flows WHERE upload_id IN ({marks}) ORDER BY first_seen',
+            upload_ids
+        )]
+        conn.close()
+        
+        # summary
+        summary = dict(total_flows=len(flows), analyzed_flows=len(flows),
+                       pqc_server_selected=sum(1 for f in flows if f.get('pqc_state')=='server_selected'),
+                       pqc_key_share_offered=sum(1 for f in flows if f.get('pqc_state') in ('key_share_offered','server_selected')),
+                       pqc_not_observed=sum(1 for f in flows if f.get('pqc_state')=='not_observed'),
+                       legacy_ciphers=sum(1 for f in flows if f.get('flag_offers_cbc') or f.get('flag_offers_rsa_kex') or f.get('flag_offers_sha1_sig')))
+        return jsonify(status='success', flows=flows, summary=summary)
 
+    @app.route('/api/crypto/analyze', methods=['POST'])
+    def api_crypto_backfill():
+        from src.webapp.crypto_service import analyze, enabled
+        from src.webapp.job_queue import _executor, _write_job
+        import uuid
+        if not enabled():
+            return jsonify(error='Crypto analysis disabled'), 409
+        start, end, error, uploads, default = _filtered_scope()
+        if error or not uploads:
+            return jsonify(error=error or 'No selected filtered evidence'), 400
+        job_id = str(uuid.uuid4())
+        state = dict(job_id=job_id, status='queued', errors=[], processed_files=0, total_files=len(uploads), progress_pct=0)
+        _write_job(job_id, state)
+        def worker():
+            state['status'] = 'running'
+            _write_job(job_id, state)
+            for upload in uploads:
+                try:
+                    analyze(upload['upload_id'])
+                except Exception as exc:
+                    state['errors'].append(str(exc))
+                state['processed_files'] += 1
+                state['progress_pct'] = state['processed_files'] * 100 / len(uploads)
+                _write_job(job_id, state)
+            state['status'] = 'completed_with_errors' if state['errors'] else 'completed'
+            _write_job(job_id, state)
+        _executor.submit(worker)
+        return jsonify(job_id=job_id)
     @app.route('/api/reports/generate', methods=['POST'])
     def api_generate_report_scope():
         """Produce an offline report from validated filtered evidence only."""

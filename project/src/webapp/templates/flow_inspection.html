@@ -1,0 +1,299 @@
+{% extends "layout.html" %}
+{% block title %}Flow Deep Inspection — WA Analytics{% endblock %}
+{% block dashboard %}
+
+<div class="mb-6">
+  <div class="flex items-center text-xs text-gray-500 mb-1">
+    <span>Pipeline</span><span class="mx-2">›</span><span class="text-blue-600 font-semibold">Flow Deep Inspection</span>
+  </div>
+  <h2 class="text-2xl font-bold text-gray-900">Flow Deep Inspection</h2>
+  <p class="text-gray-500 text-sm mt-1">Detailed flow-level view including per-flow cryptographic states and Post-Quantum Cryptography indicators.</p>
+</div>
+
+{% if not uploads %}
+<div class="bg-blue-50 border border-blue-200 rounded-xl p-8 text-center">
+  <i class="fa-solid fa-filter-circle-xmark text-blue-300 text-4xl mb-3"></i>
+  <h3 class="text-lg font-semibold text-blue-800">No raw evidence is available in this capture range</h3>
+  <p class="text-sm text-blue-700 mt-1">Register PCAP evidence and filter traffic to populate this view.</p>
+</div>
+{% else %}
+
+<style>
+  .kpi-row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .kpi { background: #fff; border-radius: 8px; padding: 14px 16px; border: 0.5px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+  .kpi-l { font-size: 12px; color: #6b7280; font-weight: 500; }
+  .kpi-v { font-size: 24px; font-weight: 600; color: #111827; margin-top: 4px; line-height: 1; }
+  
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 16px; background: #f9fafb; border-bottom: 1px solid #f3f4f6; }
+  .filter-select { font-size: 12px; border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 10px; background: #fff; min-width: 140px; }
+  .filter-search { font-size: 12px; border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 10px; background: #fff; min-width: 220px; flex: 1; }
+  
+  .table-container { background: #fff; border-radius: 12px; border: 1px solid #f3f4f6; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow: hidden; }
+  .flow-table { width: 100%; text-align: left; font-size: 11px; white-space: nowrap; border-collapse: collapse; }
+  .flow-table th { padding: 12px 16px; font-weight: 600; color: #6b7280; background: #fff; border-bottom: 1px solid #f3f4f6; position: sticky; top: 0; z-index: 10; }
+  .flow-table td { padding: 10px 16px; border-bottom: 1px solid #f9fafb; color: #374151; vertical-align: middle; }
+  .flow-table tr:hover { background: #f8fafc; }
+  
+  /* Status Badges */
+  .badge { display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 4px; font-weight: 500; font-size: 10px; }
+  .badge-tcp { background: #dcfce7; color: #166534; }
+  .badge-udp { background: #e0f2fe; color: #0369a1; }
+  
+  /* PQC Colors */
+  .pqc-red { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; font-weight: 600; }
+  .pqc-amber { background: #fef3c7; color: #b45309; border: 1px solid #fcd34d; font-weight: 600; }
+  .pqc-purple { background: #f3e8ff; color: #7e22ce; border: 1px solid #d8b4fe; font-weight: 600; }
+  .pqc-grey { background: #f3f4f6; color: #4b5563; border: 1px solid #e5e7eb; }
+  .pqc-light { background: #f8fafc; color: #94a3b8; border: 1px solid #f1f5f9; }
+  .pqc-orange { background: #ffedd5; color: #c2410c; border: 1px solid #fdba74; }
+  .pqc-yellow { background: #fef9c3; color: #a16207; border: 1px solid #fde047; }
+  
+  /* KEX Colors */
+  .kex-classical  { background: #f0fdf4; color: #166534; border: 1px solid #86efac; }
+  .kex-hybrid     { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; font-weight: 600; }
+  .kex-pure-pqc   { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; font-weight: 600; }
+  .kex-sized      { background: #f0f9ff; color: #0369a1; border: 1px solid #7dd3fc; }
+  .kex-unknown    { background: #f3f4f6; color: #6b7280; border: 1px solid #d1d5db; }
+</style>
+
+<!-- Zone A: Summary KPI Bar -->
+<div class="kpi-row" id="crypto-kpis">
+  <div class="kpi"><div class="kpi-l">Total Flows</div><div class="kpi-v" id="kpi-total">0</div></div>
+  <div class="kpi"><div class="kpi-l">Crypto-Analyzed</div><div class="kpi-v text-blue-600" id="kpi-analyzed">0</div></div>
+  <div class="kpi border-l-4 border-red-500"><div class="kpi-l text-red-600">PQC: Server Selected</div><div class="kpi-v text-red-600" id="kpi-pqc-ss">0</div></div>
+  <div class="kpi border-l-4 border-amber-500"><div class="kpi-l text-amber-600">PQC: Key Share Offered</div><div class="kpi-v text-amber-600" id="kpi-pqc-ks">0</div></div>
+  <div class="kpi border-l-4 border-gray-300"><div class="kpi-l">PQC: Not Observed</div><div class="kpi-v" id="kpi-pqc-no">0</div></div>
+  <div class="kpi border-l-4 border-orange-400"><div class="kpi-l text-orange-600">Legacy Ciphers Flagged</div><div class="kpi-v text-orange-600" id="kpi-legacy">0</div></div>
+</div>
+
+<!-- Zone B & C: Data Table -->
+<div class="table-container flex flex-col h-[600px]">
+  <div class="filter-bar flex-shrink-0">
+    <select id="f-class" class="filter-select" onchange="renderFlows()">
+      <option value="all">All Classifications</option>
+      <option value="voice_call">Voice Call</option>
+      <option value="message">Text Message</option>
+      <option value="media">Media</option>
+      <option value="call_signaling">Call Setup</option>
+      <option value="unclassified">Unclassified</option>
+    </select>
+    <select id="f-transport" class="filter-select" onchange="renderFlows()">
+      <option value="all">All Transports</option>
+      <option value="tls_tcp">TLS 1.3 / TCP</option>
+      <option value="quic">QUIC v1</option>
+      <option value="wa_framed">WA Framed</option>
+      <option value="unknown">Unknown</option>
+    </select>
+    <select id="f-pqc" class="filter-select" onchange="renderFlows()">
+      <option value="all">All PQC States</option>
+      <option value="server_selected">Server Selected</option>
+      <option value="key_share_offered">Key Share Offered</option>
+      <option value="not_observed">Not Observed</option>
+      <option value="legacy">Legacy Cipher</option>
+      <option value="incomplete_capture">Incomplete Capture</option>
+    </select>
+    <select id="f-kex" class="filter-select" onchange="renderFlows()">
+      <option value="all">All KEX Types</option>
+      <option value="classical_ec">Classical EC</option>
+      <option value="classical_ffdh">Classical FFDH</option>
+      <option value="hybrid_pqc">Hybrid PQC</option>
+      <option value="pure_pqc">Pure PQC</option>
+      <option value="classical_sized_only">Classical-Sized (WA)</option>
+      <option value="none_psk_ke">Resumed (no KEX)</option>
+      <option value="undetermined">Undetermined</option>
+    </select>
+    <input type="text" id="f-search" class="filter-search" placeholder="Search IP, SNI, hostname..." oninput="renderFlows()">
+    <div class="flex items-center text-xs text-gray-500 ml-auto"><span id="flows-count" class="font-bold mr-1">0</span> flows found</div>
+  </div>
+  
+  <div class="flex-1 overflow-auto">
+    <table class="flow-table">
+      <thead>
+        <tr>
+          <th>Flow (Client ⇄ Server)</th>
+          <th>Protocol</th>
+          <th>Duration</th>
+          <th>Classification</th>
+          <th>Activity</th>
+          <th>Transport</th>
+          <th>Key Exchange (Neg.)</th>
+          <th>KEX Class</th>
+          <th>Cipher Suite</th>
+          <th>PQC State</th>
+          <th>SNI / Hostname</th>
+          <th>Country</th>
+          <th>IP Role</th>
+          <th>Packets</th>
+        </tr>
+      </thead>
+      <tbody id="flows-tbody">
+        <tr><td colspan="13" class="text-center py-8 text-gray-400">Loading flow data...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  function escapeCrypto(value) { const el = document.createElement('span'); el.textContent = String(value || '-'); return el.innerHTML; }
+  let rawFlows = [];
+  const currentBatchId = "{{ batch_id or '' }}";
+
+  function getPqcStyle(state) {
+    switch (state) {
+      case 'server_selected': return 'pqc-red';
+      case 'key_share_offered': return 'pqc-amber';
+      case 'capability_advertised': return 'pqc-purple';
+      case 'not_observed': return 'pqc-grey';
+      case 'not_applicable': return 'pqc-light';
+      case 'legacy': return 'pqc-orange';
+      case 'incomplete_capture': return 'pqc-yellow';
+      default: return 'pqc-grey';
+    }
+  }
+
+  function getKexStyle(kex_class) {
+    switch(kex_class) {
+      case 'classical_ec':
+      case 'classical_ffdh':   return 'kex-classical';
+      case 'hybrid_pqc':
+      case 'hybrid_pqc_draft': return 'kex-hybrid';
+      case 'pure_pqc':         return 'kex-pure-pqc';
+      case 'classical_sized_only': return 'kex-sized';
+      default:                 return 'kex-unknown';
+    }
+  }
+
+  function getKexLabel(kex_class) {
+    const labels = {
+      classical_ec:          'Classical EC',
+      classical_ffdh:        'Classical FFDH',
+      hybrid_pqc:            'Hybrid PQC',
+      hybrid_pqc_draft:      'Hybrid PQC (draft)',
+      pure_pqc:              'Pure PQC',
+      classical_tls12:       'Classical (TLS 1.2)',
+      none_psk_ke:           'Resumed (no KEX)',
+      classical_sized_only:  'Classical-sized',
+      undetermined:          '—',
+      unknown:               'Unknown group',
+    };
+    return labels[kex_class] || kex_class || '—';
+  }
+
+  function formatDur(ms) {
+    if (!ms || ms < 1000) return '<1s';
+    const s = Math.round(ms / 1000);
+    if (s < 60) return s + 's';
+    return Math.floor(s/60) + 'm ' + (s%60) + 's';
+  }
+
+  function loadData() {
+    fetch('/api/crypto/flows' + window.location.search)
+      .then(r => r.json())
+      .then(d => {
+        if (d.status === 'success') {
+          rawFlows = (d.flows || []).map(f => { const row = {...f}; for (const key of ['client_ip','server_ip','server_name','neg_group_name','sh_cipher','pqc_basis']) row[key] = escapeCrypto(row[key]); return row; });
+          const s = d.summary || {};
+          document.getElementById('kpi-total').textContent = s.total_flows || 0;
+          document.getElementById('kpi-analyzed').textContent = s.analyzed_flows || 0;
+          document.getElementById('kpi-pqc-ss').textContent = s.pqc_server_selected || 0;
+          document.getElementById('kpi-pqc-ks').textContent = s.pqc_key_share_offered || 0;
+          document.getElementById('kpi-pqc-no').textContent = s.pqc_not_observed || 0;
+          document.getElementById('kpi-legacy').textContent = s.legacy_ciphers || 0;
+          renderFlows();
+        }
+      })
+      .catch(e => { document.getElementById('flows-tbody').textContent = 'Crypto request failed: ' + e.message; });
+  }
+
+  function renderFlows() {
+    const filterClass = document.getElementById('f-class').value;
+    const filterTrans = document.getElementById('f-transport').value;
+    const filterPqc = document.getElementById('f-pqc').value;
+    const filterSearch = document.getElementById('f-search').value.toLowerCase();
+
+    const filtered = rawFlows.filter(f => {
+      // Stub: in a real implementation we would merge these from the main packets,
+      // but for now we only filter on the crypto fields we have.
+      if (filterTrans !== 'all' && f.transport !== filterTrans) return false;
+      if (filterPqc !== 'all' && f.pqc_state !== filterPqc) return false;
+      
+      const filterKex = document.getElementById('f-kex').value;
+      if (filterKex !== 'all' && f.kex_class !== filterKex) return false;
+      
+      if (filterSearch) {
+        const text = `${f.client_ip} ${f.server_ip} ${f.server_name || ''} ${f.neg_group_name || ''}`.toLowerCase();
+        if (!text.includes(filterSearch)) return false;
+      }
+      return true;
+    });
+
+    document.getElementById('flows-count').textContent = filtered.length;
+    const tbody = document.getElementById('flows-tbody');
+    
+    if (filtered.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="13" class="text-center py-8 text-gray-400">No flows match the selected filters.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = filtered.map(f => {
+      // Basic formatting placeholders for merged fields we expect to have
+      const protoBadge = f.protocol || 'Unknown';
+      const protoClass = f.transport === 'quic' ? 'badge-udp' : 'badge-tcp';
+      const dur = formatDur((f.duration_s || 0) * 1000);
+      
+      const pqcName = (f.pqc_state || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      const pqcStyle = getPqcStyle(f.pqc_state);
+      
+      const keyLen = f.sh_key_share_len ? ` (${f.sh_key_share_len} B)` : '';
+      const kex = f.neg_group_name ? `${f.neg_group_name}${keyLen}` : '-';
+      const cipher = f.sh_cipher_name || f.sh_cipher || '-';
+      const kexClass = f.kex_class || f.neg_group_class || 'undetermined';
+      const kexLabel = getKexLabel(kexClass);
+      const kexStyle = getKexStyle(kexClass);
+      const sizeNote = f.size_mismatch ? ' ⚠' : '';
+
+      return `
+        <tr>
+          <td class="font-mono text-[10px]"><span class="text-gray-500">${f.client_ip}:${f.client_port}</span> <span class="text-gray-300">⇄</span> <span class="text-gray-700">${f.server_ip}:${f.server_port}</span></td>
+          <td><span class="badge ${protoClass}">${protoBadge}</span></td>
+          <td class="text-gray-500">${dur}</td>
+          <td>-</td>
+          <td>-</td>
+          <td><span class="px-2 py-0.5 bg-gray-100 rounded text-gray-700">${f.transport || 'unknown'}</span></td>
+          <td class="font-mono text-[10px]" title="${f.neg_group_name || ''}">${kex}</td>
+          <td><span class="badge ${kexStyle}" title="${kexClass}">${kexLabel}${sizeNote}</span></td>
+          <td class="font-mono text-[10px]" title="${f.sh_cipher || ''}">${cipher}</td>
+          <td><span class="badge ${pqcStyle}" title="${f.pqc_basis || ''}">${pqcName}</span></td>
+          <td class="font-mono text-[10px] max-w-[150px] truncate" title="${f.server_name || '-'}">${f.server_name || '-'}</td>
+          <td>-</td>
+          <td>-</td>
+          <td class="text-gray-500">${f.total_packets || '-'}</td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const button = document.createElement('button'); button.textContent = 'Analyze Crypto for selected captures'; button.className = 'filter-select';
+    const status = document.createElement('p'); status.setAttribute('role','status');
+    document.getElementById('crypto-kpis').after(button, status);
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const response = await fetch('/api/crypto/analyze' + window.location.search, {method:'POST'});
+        const result = await response.json(); if (!response.ok) throw new Error(result.error);
+        const timer = setInterval(async () => {
+          try {
+            const r = await fetch('/api/jobs/' + result.job_id); const job = await r.json();
+            status.textContent = job.status + ' ' + job.progress_pct + '%';
+            if (['completed','completed_with_errors','failed'].includes(job.status)) { clearInterval(timer); button.disabled = false; status.textContent += ' ' + (job.errors || []).join('; '); loadData(); }
+          } catch(e) { clearInterval(timer); button.disabled = false; status.textContent = e.message; }
+        }, 1500);
+      } catch(e) { button.disabled = false; status.textContent = e.message; }
+    };
+    loadData();
+  });
+</script>
+
+{% endif %}
+{% endblock %}

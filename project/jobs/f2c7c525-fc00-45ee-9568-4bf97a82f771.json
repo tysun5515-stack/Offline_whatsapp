@@ -1,0 +1,28 @@
+{
+  "job_id": "f2c7c525-fc00-45ee-9568-4bf97a82f771",
+  "status": "completed_with_errors",
+  "progress_pct": 100.0,
+  "total_files": 1,
+  "processed_files": 1,
+  "upload_ids": [
+    "fcf50827-dcef-405a-a748-9ddcad03a4cf"
+  ],
+  "errors": [
+    "text_chat_nothing3a_wifi_001.pcap: table crypto_flows has no column named classification"
+  ],
+  "outcomes": [
+    {
+      "upload_id": "fcf50827-dcef-405a-a748-9ddcad03a4cf",
+      "filename": "text_chat_nothing3a_wifi_001.pcap",
+      "status": "error",
+      "error": "table crypto_flows has no column named classification"
+    }
+  ],
+  "stats": {
+    "packet_count": 0,
+    "flow_count": 0,
+    "whatsapp_count": 0,
+    "bypass_mode": false,
+    "total_raw_packets": 0
+  }
+}

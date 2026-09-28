@@ -70,41 +70,6 @@ def _legacy_local_remote(a: str, b: str, subscriber: Optional[str]) -> Tuple[str
         return (b, a) if a_meta else (a, b)
     return a, b
 
-
-def _aggregate_crypto(packets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Return counts and flow references; never select a party-wide handshake."""
-    counts = Counter()
-    flow_refs, quic_versions = set(), set()
-    for packet in packets:
-        if packet.get("quic_version"):
-            quic_versions.add(str(packet["quic_version"]))
-        raw = packet.get("tls_crypto_info")
-        if not raw:
-            continue
-        try:
-            info = json.loads(raw) if isinstance(raw, str) else raw
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if not isinstance(info, dict):
-            continue
-        kind = info.get("type")
-        counts[kind] += 1
-        counts["pqc_offer"] += int(bool(info.get("pqc") and kind == "client_hello"))
-        counts["pqc_selection"] += int(bool(info.get("pqc") and kind == "server_hello"))
-        if packet.get("flow_id"):
-            flow_refs.add(str(packet["flow_id"]))
-    if not counts and not quic_versions:
-        return None
-    return {
-        "client_hello_count": counts["client_hello"],
-        "server_hello_count": counts["server_hello"],
-        "pqc_offer_count": counts["pqc_offer"],
-        "pqc_selection_count": counts["pqc_selection"],
-        "quic_versions": sorted(quic_versions),
-        "flow_refs": sorted(flow_refs),
-    }
-
-
 def _ports_for(ip: str, packets: List[Dict[str, Any]]) -> List[int]:
     ports = set()
     for packet in packets:
@@ -211,7 +176,6 @@ def group_into_entities(
             "media_breakdown": " · ".join(f"{count} {label}" for label, count in breakdown.most_common()) or None,
             "source_file": filenames[0] if len(filenames) == 1 else "Multiple captures",
             "source_files": json.dumps(filenames),
-            "crypto_summary": _aggregate_crypto(pkts),
             "call_duration_s": 0.0,
             "longest_call_s": 0.0,
             "call_window_count": 0,
