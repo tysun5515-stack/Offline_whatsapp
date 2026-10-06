@@ -80,7 +80,7 @@ def _process_filter_job(job_id: str, upload_ids: List[str], skip_filter: bool):
 
 def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: bool):
     from src.webapp.db_registry import get_upload, update_filtered_evidence, remove_filtered_evidence, update_status
-    from src.webapp.db_analysis import insert_whatsapp_packets, clear_upload_packets, insert_crypto_flows
+    from src.webapp.db_analysis import insert_whatsapp_packets, clear_upload_packets, insert_crypto_flows, upsert_batch_metrics
     from src.pipeline import process_pcap_to_whatsapp_packets
     from src.capture_evidence import write_filtered_capture
     import time
@@ -100,6 +100,11 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
         return os.path.join(FILTERED_PCAP_FOLDER, uid, f'{stem}_WF{extension}')
     
     for idx, upload_id in enumerate(upload_ids):
+        # Reload from disk each iteration — prevents stale state under concurrent workers
+        job_data = _read_job(job_id)
+        if not job_data:
+            return
+
         upload = get_upload(upload_id)
         if not upload:
             job_data['errors'].append(f"Upload {upload_id} not found.")
@@ -111,11 +116,21 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
             _write_job(job_id, job_data)
             continue
             
+        # Use the stored batch_id; fall back to upload_id for legacy null rows
+        effective_batch_id = upload.get('batch_id') or upload_id
+        file_format = upload.get('file_format') or 'pcap'
+        outcome_status = 'error'
+        written = 0
+        stats = {}
+        packets = []
+        crypto_data = ([], [])
+
         try:
-            if upload.get('file_format') == 'json':
+            # ── 1. Parse / classify ─────────────────────────────────────
+            if file_format == 'json':
                 from src.importers.json_importer import process_json_to_whatsapp_packets
                 stats, packets, _ = process_json_to_whatsapp_packets(upload['stored_path'])
-            elif upload.get('file_format') == 'csv':
+            elif file_format == 'csv':
                 from src.importers.csv_importer import process_csv_to_whatsapp_packets
                 stats, packets, _ = process_csv_to_whatsapp_packets(upload['stored_path'])
             else:
@@ -130,62 +145,93 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                     explicit_subscriber_ips=subscriber_ips,
                 )
                 
+            # ── 2. Evidence handling ────────────────────────────────────
             if skip_filter:
                 remove_filtered_evidence(upload, status='bypass_no_output')
                 clear_upload_packets(upload_id)
-            elif upload.get('file_format') in ('json', 'csv'):
-                update_filtered_evidence(upload_id, status='filter_error')
+                outcome_status = 'bypass_no_output'
+
+            elif file_format in ('json', 'csv'):
+                # Imported formats: no filtered PCAP output, but packets DO go into DB
                 clear_upload_packets(upload_id)
+                if packets:
+                    insert_whatsapp_packets(effective_batch_id, upload_id, upload['filename'], packets)
+                update_filtered_evidence(upload_id, status='imported')
+                outcome_status = 'imported'
             else:
+                # PCAP / PCAPNG: write a filtered output file
                 packet_numbers = {int(p['packet_no']) for p in packets if p.get('packet_no') is not None}
-                destination = _filtered_path(upload_id, upload['filename'], upload.get('file_format'))
+                destination = _filtered_path(upload_id, upload['filename'], file_format)
                 if os.path.exists(destination):
                     os.remove(destination)
+                    
                 if packet_numbers:
-                    written = write_filtered_capture(upload['stored_path'], destination, packet_numbers, upload.get('file_format'), stats.get('packet_count'))
+                    written = write_filtered_capture(
+                        upload['stored_path'], destination, packet_numbers,
+                        file_format, stats.get('packet_count')
+                    )
                 else:
                     written = 0
-                if written:
-                    update_filtered_evidence(upload_id, destination, upload.get('file_format'), written, 'filtered_output_created')
+                    
+                if written and os.path.isfile(destination):
+                    update_filtered_evidence(upload_id, destination, file_format, written, 'filtered_output_created')
+                    # Insert classified packets into analysis DB
+                    clear_upload_packets(upload_id)
+                    insert_whatsapp_packets(effective_batch_id, upload_id, upload['filename'], packets)
+                    outcome_status = 'filtered_output_created'
                 else:
                     update_filtered_evidence(upload_id, status='no_whatsapp_match')
                     clear_upload_packets(upload_id)
+                    outcome_status = 'no_whatsapp_match'
                 
-            if not skip_filter and packets and upload.get('file_format') not in ('json', 'csv') and os.path.isfile(destination):
-                insert_whatsapp_packets(upload_id, upload_id, upload['filename'], packets)
-                
-            if upload.get('file_format') not in ('json', 'csv') and 'crypto_data' in locals():
+            # ── 3. Crypto flows ─────────────────────────────────────────
+            if file_format not in ('json', 'csv'):
                 c_flows, c_events = crypto_data
                 if c_flows:
-                    insert_crypto_flows(upload.get('batch_id') or upload_id, upload_id, c_flows, c_events)
+                    insert_crypto_flows(effective_batch_id, upload_id, c_flows, c_events)
             
+            # ── 4. Persist batch metrics ────────────────────────────────
+            upsert_batch_metrics(effective_batch_id, {
+                'packet_count':      stats.get('packet_count', 0),
+                'flow_count':        stats.get('flow_count', 0),
+                'whatsapp_count':    stats.get('whatsapp_count', 0),
+                'detected_os':       stats.get('detected_os', 'unknown'),
+                'bypass_mode':       skip_filter,
+                'total_raw_packets': stats.get('total_raw_packets', stats.get('packet_count', 0)),
+                'pass1_accepted':    stats.get('pass1_accepted', 0),
+                'pass2_dns_accepted':stats.get('pass2_dns_accepted', 0),
+                'rejected_no_signal':stats.get('rejected_no_signal', 0),
+                'non_ip_count':      stats.get('non_ip_count', 0),
+                'reconciliation_ok': stats.get('reconciliation_ok', True),
+            })
+            
+            # ── 5. Optional TShark crypto analysis ─────────────────────
             update_status(upload_id, 'filtered')
             from src.webapp.crypto_service import enabled as crypto_enabled, analyze as analyze_crypto
-            if crypto_enabled() and not skip_filter and upload.get('file_format') in ('pcap', 'pcapng'):
+            if crypto_enabled() and not skip_filter and file_format in ('pcap', 'pcapng'):
                 try:
                     analyze_crypto(upload_id)
                 except Exception as exc:
                     job_data['errors'].append(f"{upload['filename']}: crypto: {exc}")
-            job_data.setdefault('outcomes', []).append({
-                'upload_id': upload_id,
-                'filename': upload['filename'],
-                'status': ('bypass_no_output' if skip_filter else
-                           'filter_error' if upload.get('file_format') in ('json', 'csv') else
-                           'filtered_output_created' if written else 'no_whatsapp_match')
-            })
-            
-            # Update stats
-            job_data['stats']['packet_count'] += stats.get('packet_count', 0)
+                    
+            # Accumulate job-level stats
+            job_data['stats']['packet_count']      += stats.get('packet_count', 0)
             job_data['stats']['total_raw_packets'] += stats.get('total_raw_packets', stats.get('packet_count', 0))
-            job_data['stats']['flow_count'] += stats.get('flow_count', 0)
-            job_data['stats']['whatsapp_count'] += stats.get('whatsapp_count', 0)
+            job_data['stats']['flow_count']        += stats.get('flow_count', 0)
+            job_data['stats']['whatsapp_count']    += stats.get('whatsapp_count', 0)
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             update_status(upload_id, 'error')
             job_data['errors'].append(f"{upload['filename']}: {str(e)}")
-            job_data.setdefault('outcomes', []).append({
-                'upload_id': upload_id, 'filename': upload['filename'], 'status': 'error', 'error': str(e)
-            })
+            outcome_status = 'error'
+            
+        job_data.setdefault('outcomes', []).append({
+            'upload_id': upload_id,
+            'filename':  upload['filename'],
+            'status':    outcome_status,
+        })
             
         job_data['processed_files'] += 1
         job_data['progress_pct'] = round((job_data['processed_files'] / job_data['total_files']) * 100, 1) if job_data['total_files'] else 100.0

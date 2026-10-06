@@ -33,7 +33,7 @@ def _dns_correlation_index(records: List[Dict[str, Any]]) -> Dict[str, List[Dict
     for packet in records:
         timestamp = packet.get("timestamp")
         for answer in packet.get("dns_answers", []):
-            hostname = answer.get("question", "")
+            hostname = answer.get("name", "")
             if timestamp is None or not any(_domain_matches_suffix(hostname, suffix) for suffix in STRONG_DOMAINS):
                 continue
             if answer.get("type") in (1, 28):
@@ -156,7 +156,7 @@ def process_pcap_to_whatsapp_packets(
         if conf_domain == "high" or conf_cidr == "high" or conf_port == "high" or dns_correlation:
             registry.seed(inference_ip)
     
-    # PASS 2: Re-evaluate and extract all packets using fully seeded registry
+    # REGISTRY PASS 2 (Seeded re-evaluation): classify all flows with the fully seeded registry
     for flow in flows:
         sni, dns = None, None
         for p in flow["packets"]:
@@ -258,9 +258,9 @@ def process_pcap_to_whatsapp_packets(
                 final_media_guess,
                 display_activity
             )
-    pass1_accepted_count = len(all_whatsapp_packets)
+    pre_dns_rescue_count = len(all_whatsapp_packets)
     
-    # PASS 2: DNS rescue sweep — only for flows rejected in Pass 1
+    # DNS RESCUE PASS: recover DNS-correlated flows that scored 'none' in classification
     rejected_flows = [f for f in flows if f.get("whatsapp_confidence") == "none"]
     for flow in rejected_flows:
         dns_correlation = _flow_dns_correlation(flow, dns_index)
@@ -302,13 +302,14 @@ def process_pcap_to_whatsapp_packets(
             packet["flow_id"] = None
             all_whatsapp_packets.append(packet)
                 
-    pass2_accepted_count = len(all_whatsapp_packets) - pass1_accepted_count
+    pass2_dns_accepted = len(all_whatsapp_packets) - pre_dns_rescue_count
+    pass1_accepted_count = pre_dns_rescue_count
     
     non_ip_count = len(packet_records) - len([p for p in packet_records if p.get("src_ip") is not None and p.get("dst_ip") is not None])
-    ip_packets_with_no_flow = len(packet_records) - non_ip_count - sum(len(f["packets"]) for f in flows)
+    ip_packets_with_no_flow = max(0, len(packet_records) - non_ip_count - sum(len(f["packets"]) for f in flows))
     
     rejected_no_signal_count = len(packet_records) - len(all_whatsapp_packets) - non_ip_count - ip_packets_with_no_flow
-    reconciliation_ok = (pass1_accepted_count + pass2_accepted_count + rejected_no_signal_count + non_ip_count + ip_packets_with_no_flow == len(packet_records))
+    reconciliation_ok = (pass1_accepted_count + pass2_dns_accepted + rejected_no_signal_count + non_ip_count + ip_packets_with_no_flow == len(packet_records))
     
     # NEW — crypto analysis pass (runs after classification so tags are present)
     try:
@@ -330,7 +331,7 @@ def process_pcap_to_whatsapp_packets(
         'detected_os': detected_os,
         'os_timeout_used': 'dynamic',
         'pass1_accepted': pass1_accepted_count,
-        'pass2_dns_accepted': pass2_accepted_count,
+        'pass2_dns_accepted': pass2_dns_accepted,
         'rejected_no_signal': rejected_no_signal_count,
         'non_ip_count': non_ip_count,
         'reconciliation_ok': reconciliation_ok,

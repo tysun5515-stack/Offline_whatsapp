@@ -1,7 +1,7 @@
 import csv
 import os
 from typing import Tuple, Dict, Any, List
-from src.pipeline import rebuild_flows
+from src.flow_builder import rebuild_flows
 
 def process_csv_to_whatsapp_packets(csv_path: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
     packet_records = []

@@ -1,7 +1,7 @@
 import json
 import os
 from typing import Tuple, Dict, Any, List
-from src.pipeline import rebuild_flows
+from src.flow_builder import rebuild_flows
 
 def process_json_to_whatsapp_packets(json_path: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
     with open(json_path, 'r', encoding='utf-8') as f:

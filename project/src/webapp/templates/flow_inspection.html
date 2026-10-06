@@ -212,8 +212,10 @@
     const filterSearch = document.getElementById('f-search').value.toLowerCase();
 
     const filtered = rawFlows.filter(f => {
-      // Stub: in a real implementation we would merge these from the main packets,
-      // but for now we only filter on the crypto fields we have.
+      if (filterClass !== 'all') {
+        const cls = (f.classification || f.whatsapp_confidence || '').toLowerCase();
+        if (!cls.includes(filterClass)) return false;
+      }
       if (filterTrans !== 'all' && f.transport !== filterTrans) return false;
       if (filterPqc !== 'all' && f.pqc_state !== filterPqc) return false;
       
@@ -237,9 +239,13 @@
 
     tbody.innerHTML = filtered.map(f => {
       // Basic formatting placeholders for merged fields we expect to have
-      const protoBadge = f.protocol || 'Unknown';
-      const protoClass = f.transport === 'quic' ? 'badge-udp' : 'badge-tcp';
+      const transportVal = f.transport || 'unknown';
+      const protoBadge = transportVal.replace('_', ' ').toUpperCase();
+      const protoClass = transportVal === 'quic' ? 'badge-udp' : (transportVal === 'tls_tcp' ? 'badge-tcp' : 'badge-tcp');
       const dur = formatDur((f.duration_s || 0) * 1000);
+      
+      const escapeCrypto = (str) => String(str).replace(/[&<>'"]/g, 
+        tag => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'}[tag] || tag));
       
       const pqcName = (f.pqc_state || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
       const pqcStyle = getPqcStyle(f.pqc_state);
@@ -257,16 +263,16 @@
           <td class="font-mono text-[10px]"><span class="text-gray-500">${f.client_ip}:${f.client_port}</span> <span class="text-gray-300">⇄</span> <span class="text-gray-700">${f.server_ip}:${f.server_port}</span></td>
           <td><span class="badge ${protoClass}">${protoBadge}</span></td>
           <td class="text-gray-500">${dur}</td>
-          <td>-</td>
-          <td>-</td>
+          <td>${escapeCrypto(f.classification || f.whatsapp_confidence || '—')}</td>
+          <td>${escapeCrypto(f.whatsapp_confidence || '—')}</td>
           <td><span class="px-2 py-0.5 bg-gray-100 rounded text-gray-700">${f.transport || 'unknown'}</span></td>
           <td class="font-mono text-[10px]" title="${f.neg_group_name || ''}">${kex}</td>
           <td><span class="badge ${kexStyle}" title="${kexClass}">${kexLabel}${sizeNote}</span></td>
           <td class="font-mono text-[10px]" title="${f.sh_cipher || ''}">${cipher}</td>
           <td><span class="badge ${pqcStyle}" title="${f.pqc_basis || ''}">${pqcName}</span></td>
           <td class="font-mono text-[10px] max-w-[150px] truncate" title="${f.server_name || '-'}">${f.server_name || '-'}</td>
-          <td>-</td>
-          <td>-</td>
+          <td>${escapeCrypto(f.server_name || '—')}</td>
+          <td>${escapeCrypto(f.whatsapp_confidence || '—')}</td>
           <td class="text-gray-500">${f.total_packets || '-'}</td>
         </tr>
       `;

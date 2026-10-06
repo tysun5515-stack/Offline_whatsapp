@@ -283,7 +283,6 @@ def create_app():
 
     @app.route('/dashboard')
     def dashboard():
-        batch_id = None
         start_ts, end_ts, range_error, uploads, default_scope = _filtered_scope()
         if range_error:
             return render_template('dashboard.html', active_interface=0, uploads=uploads, error=range_error,
@@ -318,7 +317,15 @@ def create_app():
             packets = get_packets(None, start_ts, end_ts, upload_ids=upload_ids)
             # Persisted parties are full-case evidence. Range views are derived in memory.
             parties, _sessions = _derive_parties_and_sessions(packets, 'evidence-scope', 'unknown')
-            b_metrics = None
+            
+            # Aggregate batch metrics for all uploads in scope
+            b_metrics_list = [get_batch_metrics(u.get('batch_id') or u['upload_id']) for u in uploads]
+            b_metrics_list = [m for m in b_metrics_list if m]
+            b_metrics = {
+                'packet_count': sum(m.get('packet_count', 0) for m in b_metrics_list),
+                'flow_count':   sum(m.get('flow_count', 0) for m in b_metrics_list),
+                'bypass_mode':  any(m.get('bypass_mode') for m in b_metrics_list),
+            } if b_metrics_list else None
 
             if packets:
                 total_bytes = sum(p.get('length') or 0 for p in packets)
@@ -459,7 +466,6 @@ def create_app():
                     insights.append(f'High-confidence detection: {metrics["detection_rate"]}%')
 
         # ── Recent activity feed from upload history ─────────
-        all_uploads = list_uploads() if not uploads else uploads
         for u in (uploads or []):
             status = u.get('status', 'registered')
             if status == 'registered':
@@ -473,14 +479,14 @@ def create_app():
                 recent_events.append({
                     'icon': 'fa-filter', 'color': 'teal',
                     'title': 'Traffic filtered',
-                    'subtitle': f"Case {batch_id[:8] if batch_id else ''}",
+                    'subtitle': u.get('filename', ''),
                     'time': (u.get('uploaded_at') or '')[:16].replace('T', ' '),
                 })
             elif status == 'analyzed':
                 recent_events.append({
                     'icon': 'fa-check', 'color': 'green',
                     'title': 'Analysis finished',
-                    'subtitle': f"Case {batch_id[:8] if batch_id else ''}",
+                    'subtitle': u.get('filename', ''),
                     'time': (u.get('uploaded_at') or '')[:16].replace('T', ' '),
                 })
         recent_events = recent_events[:5]
@@ -783,20 +789,6 @@ def create_app():
                                default_scope=default_scope, capture_start_ts=start_ts,
                                capture_end_ts=end_ts,
                                excluded_evidence=max(0, len(list_uploads()) - len(uploads)))
-    # DEEP_ANALYSIS_DISABLED
-    # @app.route('/interface/4')
-    # def interface4():
-    #     batch_id = request.args.get('batch_id')
-    #     uploads = get_batch(batch_id) if batch_id else []
-    #     
-    #     sessions = get_sessions(batch_id) if batch_id else []
-    #     all_batches = list_batches()
-    #     
-    #     return render_template('interface4.html',
-    #                            active_interface=4,
-    #                            uploads=uploads,
-    #                            sessions=sessions,
-    #                            all_batches=all_batches)
 
     # ---------------------------------------------------------
     # API Routes
@@ -815,6 +807,7 @@ def create_app():
             
         import uuid
         upload_id = str(uuid.uuid4())
+        batch_id = request.form.get('batch_id') or str(uuid.uuid4())
             
         filename = secure_filename(file.filename) or 'capture.pcap'
         filename, filepath = _raw_path(upload_id, filename)
@@ -824,7 +817,7 @@ def create_app():
             metadata = capture_metadata(filepath, file_format)
             metadata['capture_vantage'] = request.form.get('capture_vantage') or None
             metadata['subscriber_ips'] = request.form.get('subscriber_ips') or None
-            receipt = register_upload(filename, filepath, file_format=file_format, capture_metadata=metadata, upload_id=upload_id)
+            receipt = register_upload(filename, filepath, file_format=file_format, capture_metadata=metadata, upload_id=upload_id, batch_id=batch_id)
         except Exception as exc:
             if os.path.exists(filepath): os.remove(filepath)
             return redirect(url_for('interface1', error=f'Invalid capture: {exc}'))
@@ -842,6 +835,7 @@ def create_app():
             
         import uuid
         receipts = []
+        batch_id = str(uuid.uuid4())
         
         for file in files:
             if file.filename == '':
@@ -873,13 +867,13 @@ def create_app():
                 metadata = capture_metadata(filepath, file_format)
                 metadata['capture_vantage'] = request.form.get('capture_vantage') or None
                 metadata['subscriber_ips'] = request.form.get('subscriber_ips') or None
-                receipt = register_upload(target_filename, filepath, file_format=file_format, capture_metadata=metadata, upload_id=upload_id)
+                receipt = register_upload(target_filename, filepath, file_format=file_format, capture_metadata=metadata, upload_id=upload_id, batch_id=batch_id)
                 receipts.append(receipt)
             except Exception as exc:
                 if os.path.exists(filepath): os.remove(filepath)
                 receipts.append({'filename': target_filename, 'error': f'Invalid capture: {exc}'})
             
-        return jsonify({'receipts': receipts, 'registered_count': len([r for r in receipts if not r.get('error')])})
+        return jsonify({'batch_id': batch_id, 'receipts': receipts, 'registered_count': len([r for r in receipts if not r.get('error')])})
 
     @app.route('/api/filter', methods=['POST'])
     def api_filter():
@@ -933,7 +927,8 @@ def create_app():
         packets = get_packets(None, start_ts, end_ts, upload_ids=upload_ids)
         # Entities are intentionally derived from this date scope and are not a case-level DB artifact.
         parties, sessions = _derive_parties_and_sessions(packets, 'evidence-scope', 'unknown')
-        insert_sessions('evidence-scope', sessions)
+        # Sessions are scope-derived and not persisted per-upload in the current architecture.
+        # insert_sessions is intentionally not called here; sessions live in memory only.
         return jsonify({'status': 'analyzed', 'scope': {'start_ts': start_ts, 'end_ts': end_ts,
                         'file_count': len(uploads), 'default_scope': default_scope},
                         'packet_count': len(packets), 'party_count': len(parties)})
@@ -973,7 +968,6 @@ def create_app():
             traceback.print_exc()
             return jsonify({'error': str(e)}), 500
 
-    @app.route('/api/crypto_flows/<batch_id>')
     @app.route('/api/crypto/flows', defaults={'batch_id': None})
     def api_crypto_flows(batch_id):
         start, end, error, uploads, default = _filtered_scope()
@@ -1259,7 +1253,7 @@ def create_app():
         if selected_id and packet.get('upload_id') != selected_id:
             return jsonify({'error': 'Packet does not belong to the selected filtered evidence file.'}), 404
         timestamp = packet.get('timestamp')
-        if timestamp is None or timestamp < start_ts or timestamp >= end_ts:
+        if timestamp is None or (start_ts is not None and timestamp < start_ts) or (end_ts is not None and timestamp >= end_ts):
             return jsonify({'error': 'Packet falls outside the active capture range.'}), 404
         trail = build_evidence_trail(packet)
         return jsonify({'packet': packet, 'verdict': trail['verdict'], 'evidence': trail['evidence'],
