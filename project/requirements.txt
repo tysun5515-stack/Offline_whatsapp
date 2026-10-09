@@ -5,3 +5,6 @@ pyshark
 matplotlib
 scipy
 numpy
+cryptography
+cffi
+pycparser

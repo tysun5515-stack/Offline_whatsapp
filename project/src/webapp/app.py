@@ -251,15 +251,16 @@ def create_app():
 
         start, end, error = capture_range_from_request()
         is_default = False
-        if not error and start is None and end is None:
-            latest = latest_capture_end()
-            if latest is not None:
-                start, end, is_default = latest - 86400, latest + 0.000001, True
         evidence = get_evidence_scope(start, end) if not error else []
         return start, end, error, evidence, is_default
 
     def _filtered_scope():
         start, end, error, evidence, is_default = _scope()
+        if not error and start is None and end is None:
+            latest = latest_capture_end()
+            if latest is not None:
+                start, end, is_default = latest - 86400, latest + 0.000001, True
+                evidence = get_evidence_scope(start, end)
         filtered = [u for u in evidence if u.get("filtered_status") == "filtered_output_created" and u.get("filtered_path") and os.path.isfile(u.get("filtered_path"))]
         return start, end, error, filtered, is_default    
     # ---------------------------------------------------------

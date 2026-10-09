@@ -7,3 +7,7 @@ project/Filtered_PCAP/
 __pycache__/
 *.pyc
 .DS_Store
+
+project/*.db-shm
+project/*.db-wal
+project/jobs/*.json

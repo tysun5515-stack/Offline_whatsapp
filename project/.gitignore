@@ -9,3 +9,7 @@ venv/
 check.py
 rewrite_app.py
 *.pcap
+*.pcapng
+*.db-shm
+*.db-wal
+jobs/*.json

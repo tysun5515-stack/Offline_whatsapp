@@ -14,7 +14,7 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 JOBS_DIR = os.path.join(BASE_DIR, 'jobs')
 os.makedirs(JOBS_DIR, exist_ok=True)
 
-# Single global thread pool for offline async jobs
+# Single global process pool for offline async jobs
 _executor = ThreadPoolExecutor(max_workers=2)
 _jobs_lock = threading.Lock()
 
@@ -22,18 +22,28 @@ def _job_path(job_id: str) -> str:
     return os.path.join(JOBS_DIR, f"{job_id}.json")
 
 def _read_job(job_id: str) -> Optional[Dict[str, Any]]:
+    import time
     path = _job_path(job_id)
-    if not os.path.exists(path):
-        return None
-    with _jobs_lock:
-        with open(path, 'r') as f:
-            return json.load(f)
+    for _ in range(5):
+        if not os.path.exists(path):
+            return None
+        try:
+            with _jobs_lock:
+                with open(path, 'r') as f:
+                    return json.load(f)
+        except (json.JSONDecodeError, PermissionError):
+            time.sleep(0.05)
+    return None
 
 def _write_job(job_id: str, data: Dict[str, Any]):
     path = _job_path(job_id)
+    tmp_path = path + ".tmp"
     with _jobs_lock:
-        with open(path, 'w') as f:
+        with open(tmp_path, 'w') as f:
             json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
 
 def enqueue_filter_job(upload_ids: List[str], skip_filter: bool = False) -> str:
     job_id = str(uuid.uuid4())
@@ -85,6 +95,18 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
     from src.capture_evidence import write_filtered_capture
     import time
     
+    import sqlite3
+    from src.webapp.db_analysis import ANALYSIS_DB_PATH
+    from src.webapp.db_registry import REGISTRY_DB_PATH
+    for db_path in [ANALYSIS_DB_PATH, REGISTRY_DB_PATH]:
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-64000")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.commit()
+        conn.close()
+
     job_data = _read_job(job_id)
     if not job_data:
         return
@@ -147,6 +169,7 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                 
             # ── 2. Evidence handling ────────────────────────────────────
             if skip_filter:
+                for _ in packets: pass  # Consume generator to compute stats
                 remove_filtered_evidence(upload, status='bypass_no_output')
                 clear_upload_packets(upload_id)
                 outcome_status = 'bypass_no_output'
@@ -155,12 +178,15 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                 # Imported formats: no filtered PCAP output, but packets DO go into DB
                 clear_upload_packets(upload_id)
                 if packets:
-                    insert_whatsapp_packets(effective_batch_id, upload_id, upload['filename'], packets)
+                    _, packet_numbers = insert_whatsapp_packets(effective_batch_id, upload_id, upload['filename'], packets)
+                    _ = stats.get('packet_count')
                 update_filtered_evidence(upload_id, status='imported')
                 outcome_status = 'imported'
             else:
                 # PCAP / PCAPNG: write a filtered output file
-                packet_numbers = {int(p['packet_no']) for p in packets if p.get('packet_no') is not None}
+                clear_upload_packets(upload_id)
+                _, packet_numbers = insert_whatsapp_packets(effective_batch_id, upload_id, upload['filename'], packets)
+                _ = stats.get('packet_count')
                 destination = _filtered_path(upload_id, upload['filename'], file_format)
                 if os.path.exists(destination):
                     os.remove(destination)
@@ -175,13 +201,9 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                     
                 if written and os.path.isfile(destination):
                     update_filtered_evidence(upload_id, destination, file_format, written, 'filtered_output_created')
-                    # Insert classified packets into analysis DB
-                    clear_upload_packets(upload_id)
-                    insert_whatsapp_packets(effective_batch_id, upload_id, upload['filename'], packets)
                     outcome_status = 'filtered_output_created'
                 else:
                     update_filtered_evidence(upload_id, status='no_whatsapp_match')
-                    clear_upload_packets(upload_id)
                     outcome_status = 'no_whatsapp_match'
                 
             # ── 3. Crypto flows ─────────────────────────────────────────
@@ -237,6 +259,14 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
         job_data['progress_pct'] = round((job_data['processed_files'] / job_data['total_files']) * 100, 1) if job_data['total_files'] else 100.0
         _write_job(job_id, job_data)
         
+    try:
+        from src.webapp.db_analysis import _connect as _ac
+        conn = _ac()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+    except Exception:
+        pass
+
     job_data['status'] = 'completed_with_errors' if job_data['errors'] else 'completed'
     job_data['progress_pct'] = 100.0
     _write_job(job_id, job_data)

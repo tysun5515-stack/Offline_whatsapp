@@ -14,7 +14,7 @@ Fix log (this revision):
 
 import hashlib
 import ipaddress
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Iterator
 
 from src import whatsapp_filter as wf
 from src.traffic_utils import extract_bursts, extract_bursts_with_duration
@@ -277,3 +277,114 @@ def rebuild_flows(
         flow["burst_count"] = len(extract_bursts(packets, threshold=burst_threshold))
 
     return completed_flows
+
+
+
+def rebuild_flows_stream(
+    packet_stream: Iterator[Dict[str, Any]],
+    pcap_id: str,
+    burst_threshold: float = 1.0,
+    os_hint: Optional[str] = None,
+    explicit_subscriber_ips: Optional[List[str]] = None,
+) -> Iterator[Dict[str, Any]]:
+    """Yields completed flows as they finish based on inactivity timeouts."""
+    active_flows: Dict[Tuple, Dict[str, Any]] = {}
+    explicit_subscribers = set(explicit_subscriber_ips or [])
+    
+    flow_instance_counter = 0
+
+    def finalize_flow(flow: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal flow_instance_counter
+        flow_instance_counter += 1
+        packets = flow["packets"]
+        packet_count = len(packets)
+
+        timestamps = [p["timestamp"] for p in packets if p.get("timestamp") is not None]
+        first_seen = min(timestamps) if timestamps else 0.0
+        last_seen = max(timestamps) if timestamps else 0.0
+        duration_s = max(0.0, last_seen - first_seen)
+
+        lengths = [p["length"] for p in packets]
+        capture_flow_id = hashlib.sha256(
+            f"{pcap_id}|{flow_instance_counter}|{first_seen:.9f}|{flow['key']}".encode("utf-8")
+        ).hexdigest()[:24]
+        endpoint_a_ip = flow["endpoint_a_ip"]
+        a_to_b_packets = [p for p in packets if p.get("src_ip") == endpoint_a_ip]
+        b_to_a_packets = [p for p in packets if p.get("src_ip") != endpoint_a_ip]
+        flow.update({
+            "flow_id": f"{pcap_id}:{capture_flow_id}",
+            "flow_instance": flow_instance_counter,
+            "pcap_id": pcap_id,
+            "packet_count": packet_count,
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "duration_s": duration_s,
+            "average_packet_size": sum(lengths) / packet_count if packet_count > 0 else 0.0,
+            "maximum_packet_size": max(lengths) if packet_count > 0 else 0,
+            "minimum_packet_size": min(lengths) if packet_count > 0 else 0,
+            "a_to_b_packets": len(a_to_b_packets),
+            "b_to_a_packets": len(b_to_a_packets),
+            "a_to_b_bytes": sum(p.get("length", 0) for p in a_to_b_packets),
+            "b_to_a_bytes": sum(p.get("length", 0) for p in b_to_a_packets),
+        })
+
+        flow.pop("fin_endpoints", None)
+        flow["burst_count"] = len(extract_bursts(packets, threshold=burst_threshold))
+        return flow
+
+    for packet in packet_stream:
+        src_ip = packet.get("src_ip")
+        dst_ip = packet.get("dst_ip")
+        if not src_ip or not dst_ip:
+            continue
+            
+        src_port = packet.get("src_port")
+        dst_port = packet.get("dst_port")
+        protocol = packet.get("protocol")
+
+        if (src_ip, src_port or 0) < (dst_ip, dst_port or 0):
+            key = (src_ip, src_port, dst_ip, dst_port, protocol)
+        else:
+            key = (dst_ip, dst_port, src_ip, src_port, protocol)
+
+        if key in active_flows:
+            flow = active_flows[key]
+            last_pkt = flow["packets"][-1]
+            gap = packet["timestamp"] - last_pkt["timestamp"]
+
+            flags = packet.get("tcp_udp_flags") or ""
+            is_bare_syn = protocol == "TCP" and "SYN" in flags and "ACK" not in flags
+            if is_bare_syn:
+                yield finalize_flow(flow)
+                active_flows[key] = create_new_flow(packet, key, explicit_subscribers)
+                continue
+
+            is_media = _is_media_flow(flow["server_port"])
+            if protocol == "UDP":
+                ports = {src_port, dst_port}
+                if 443 in ports:
+                    timeout = 30.0
+                elif any(p is not None and 1024 <= p <= 65535 for p in ports):
+                    timeout = 10.0
+                else:
+                    timeout = 30.0
+            else:
+                timeout = wf.resolve_timeout(os_hint or 'unknown', is_media_flow=is_media)
+
+            if gap > timeout:
+                yield finalize_flow(flow)
+                active_flows[key] = create_new_flow(packet, key, explicit_subscribers)
+            else:
+                flow["packets"].append(packet)
+                if protocol == "TCP":
+                    if "RST" in flags:
+                        yield finalize_flow(flow)
+                        del active_flows[key]
+                    elif "FIN" in flags:
+                        flow["fin_endpoints"].add((src_ip, src_port))
+        else:
+            active_flows[key] = create_new_flow(packet, key, explicit_subscribers)
+
+    # Flush remaining flows
+    for flow in active_flows.values():
+        yield finalize_flow(flow)

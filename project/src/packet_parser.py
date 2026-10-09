@@ -7,6 +7,10 @@ import struct
 import socket
 from typing import Optional, Dict, Any, Tuple, List
 
+from src.tls_crypto_analyzer import (
+    parse_tls_client_hello, parse_tls_server_hello
+)
+from src.quic_decrypt import decrypt_quic_initial, parse_crypto_frames
 def parse_tls_client_hello_sni(tcp_payload: bytes) -> Optional[str]:
     """
     Parses a TLS ClientHello handshake record and extracts the SNI hostname.
@@ -432,7 +436,6 @@ def parse_packet(packet_no: int, timestamp: float, link_type: int, raw_frame: by
                         if sni:
                             record["sni"] = sni
                         
-                        from src.tls_crypto_analyzer import parse_tls_client_hello, parse_tls_server_hello
                         # Strip the 5-byte TLS record header (type + ver + len)
                         handshake_body = tcp_payload[5:]
                         ch = parse_tls_client_hello(handshake_body)
@@ -444,10 +447,6 @@ def parse_packet(packet_no: int, timestamp: float, link_type: int, raw_frame: by
                             
                 elif rec_type in (69, 87) or tcp_payload[:2] in (b"ED", b"WA"):
                     record["wa_header_seen"] = True
-                    from src.tls_crypto_analyzer import parse_wa_framed_protocol
-                    wa = parse_wa_framed_protocol(tcp_payload)
-                    if wa:
-                        record["wa_framed_crypto"] = wa
                             
     elif ip_proto == 17:  # UDP
         record["protocol"] = "UDP"
@@ -478,8 +477,6 @@ def parse_packet(packet_no: int, timestamp: float, link_type: int, raw_frame: by
                         record["quic_version"] = f"0x{quic_ver:08X}"
                         if quic_ver == 1:
                             try:
-                                from src.quic_decrypt import decrypt_quic_initial, parse_crypto_frames
-                                from src.tls_crypto_analyzer import parse_tls_client_hello, parse_tls_server_hello
                                 is_client = (dst_port == 443)
                                 if is_client:
                                     flow_key = (record["src_ip"], record["dst_ip"], src_port, dst_port)
