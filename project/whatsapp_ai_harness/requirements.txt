@@ -1,0 +1,5 @@
+Flask==3.0.3
+langgraph>=0.6,<2
+reportlab>=4.2,<5
+waitress>=3.0,<4
+

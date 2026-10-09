@@ -90,7 +90,8 @@ def _process_filter_job(job_id: str, upload_ids: List[str], skip_filter: bool):
 
 def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: bool):
     from src.webapp.db_registry import get_upload, update_filtered_evidence, remove_filtered_evidence, update_status
-    from src.webapp.db_analysis import insert_whatsapp_packets, clear_upload_packets, insert_crypto_flows, upsert_batch_metrics
+    from src.webapp.db_analysis import insert_whatsapp_packets, clear_upload_packets, insert_crypto_flows, upsert_upload_metrics
+    from src.analysis_readiness import begin_upload_analysis, complete_upload_analysis, fail_upload_analysis
     from src.pipeline import process_pcap_to_whatsapp_packets
     from src.capture_evidence import write_filtered_capture
     import time
@@ -148,6 +149,7 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
         crypto_data = ([], [])
 
         try:
+            begin_upload_analysis(upload)
             # ── 1. Parse / classify ─────────────────────────────────────
             if file_format == 'json':
                 from src.importers.json_importer import process_json_to_whatsapp_packets
@@ -213,7 +215,7 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                     insert_crypto_flows(effective_batch_id, upload_id, c_flows, c_events)
             
             # ── 4. Persist batch metrics ────────────────────────────────
-            upsert_batch_metrics(effective_batch_id, {
+            upsert_upload_metrics(upload_id, effective_batch_id, {
                 'packet_count':      stats.get('packet_count', 0),
                 'flow_count':        stats.get('flow_count', 0),
                 'whatsapp_count':    stats.get('whatsapp_count', 0),
@@ -235,6 +237,12 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                     analyze_crypto(upload_id)
                 except Exception as exc:
                     job_data['errors'].append(f"{upload['filename']}: crypto: {exc}")
+
+            if skip_filter:
+                fail_upload_analysis(upload_id, "Bypass-retained traffic is not eligible for the forensic AI views")
+            else:
+                complete_upload_analysis(upload_id)
+                update_status(upload_id, 'analyzed')
                     
             # Accumulate job-level stats
             job_data['stats']['packet_count']      += stats.get('packet_count', 0)
@@ -246,6 +254,10 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
             import traceback
             traceback.print_exc()
             update_status(upload_id, 'error')
+            try:
+                fail_upload_analysis(upload_id, e)
+            except Exception:
+                traceback.print_exc()
             job_data['errors'].append(f"{upload['filename']}: {str(e)}")
             outcome_status = 'error'
             

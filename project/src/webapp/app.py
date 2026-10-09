@@ -16,16 +16,14 @@ from src.webapp.db_registry import (
     get_evidence_scope, latest_capture_end, flatten_evidence_storage_once, list_raw_evidence, list_filtered_evidence, delete_evidence_copy, set_filter_state
 )
 from src.webapp.db_analysis import (
-    init_analysis_db, insert_whatsapp_packets, insert_parties, 
-    get_packets, get_parties, get_geo, upsert_geo, insert_sessions, get_sessions,
+    init_analysis_db,
+    get_packets, get_parties, get_parties_scope, get_geo, upsert_geo, get_sessions, get_sessions_scope,
     upsert_batch_metrics, get_batch_metrics, clear_batch_packets,
     get_file_list, get_packets_paged, get_packet_detail, clear_upload_packets
 )
 from src.webapp.forensic_evidence import build_evidence_trail
 from src.pipeline import process_pcap_to_whatsapp_packets
 from src.capture_evidence import capture_metadata, write_filtered_capture
-from src.party_grouper import group_into_entities
-from src.session_engine import reconstruct_flow_sessions, attach_session_metrics
 from src.geolocation import geolocate, reverse_dns
 from src.geo_plot import generate_map_html
 from src.geo_mapping import classify_remote_party
@@ -34,15 +32,6 @@ from src.geo_enrichment import enrich_parties
 # India has no daylight-saving transitions, so a fixed offset avoids requiring
 # the optional ``tzdata`` package on Windows Python installations.
 IST = timezone(timedelta(hours=5, minutes=30), name='IST')
-
-
-def _derive_parties_and_sessions(packets, scope_id, os_hint='unknown'):
-    parties = group_into_entities(packets, scope_id, os_hint)
-    sessions = reconstruct_flow_sessions(packets, parties)
-    attach_session_metrics(parties, sessions)
-    return parties, sessions
-
-
 
 
 def capture_range_from_request():
@@ -316,8 +305,7 @@ def create_app():
         if uploads:
             upload_ids = [u['upload_id'] for u in uploads]
             packets = get_packets(None, start_ts, end_ts, upload_ids=upload_ids)
-            # Persisted parties are full-case evidence. Range views are derived in memory.
-            parties, _sessions = _derive_parties_and_sessions(packets, 'evidence-scope', 'unknown')
+            parties = get_parties_scope(upload_ids, start_ts, end_ts)
             
             # Aggregate batch metrics for all uploads in scope
             b_metrics_list = [get_batch_metrics(u.get('batch_id') or u['upload_id']) for u in uploads]
@@ -594,7 +582,7 @@ def create_app():
         if uploads and any(u['status'] in ('filtered', 'analyzed') for u in uploads):
             upload_ids = [u['upload_id'] for u in uploads]
             packets = get_packets(None, start_ts, end_ts, upload_ids=upload_ids)
-            parties_data, _map_sessions = _derive_parties_and_sessions(packets, 'evidence-scope', 'unknown')
+            parties_data = get_parties_scope(upload_ids, start_ts, end_ts)
             parties_data = enrich_parties(parties_data, get_geo, upsert_geo)
             for p in parties_data:
                 p['ip_classification'], p['ip_class_group'], p['ip_classification_description'] = classify_ip_presentation(p)
@@ -926,13 +914,11 @@ def create_app():
             return jsonify({'error': error or 'No evidence matches this capture range.'}), 400
         upload_ids = [u['upload_id'] for u in uploads]
         packets = get_packets(None, start_ts, end_ts, upload_ids=upload_ids)
-        # Entities are intentionally derived from this date scope and are not a case-level DB artifact.
-        parties, sessions = _derive_parties_and_sessions(packets, 'evidence-scope', 'unknown')
-        # Sessions are scope-derived and not persisted per-upload in the current architecture.
-        # insert_sessions is intentionally not called here; sessions live in memory only.
+        parties = get_parties_scope(upload_ids, start_ts, end_ts)
+        sessions = get_sessions_scope(upload_ids, start_ts, end_ts)
         return jsonify({'status': 'analyzed', 'scope': {'start_ts': start_ts, 'end_ts': end_ts,
                         'file_count': len(uploads), 'default_scope': default_scope},
-                        'packet_count': len(packets), 'party_count': len(parties)})
+                        'packet_count': len(packets), 'party_count': len(parties), 'session_count': len(sessions)})
 
     @app.route('/api/analyze/<batch_id>', methods=['POST'])
     def api_analyze(batch_id):
@@ -941,29 +927,20 @@ def create_app():
             return jsonify({'error': 'Batch not found'}), 404
             
         try:
-            packets = get_packets(batch_id)
-            
-            # Bug 4 fix: extract os_hint properly so OS timeouts aren't always lost
-            os_hint = 'unknown'
-            b_metrics = get_batch_metrics(batch_id)
-            if b_metrics and 'detected_os' in b_metrics:
-                os_raw = b_metrics['detected_os']
-                # format is usually "android - high confidence", we just want the first word
-                os_hint = os_raw.split()[0].lower() if os_raw else 'unknown'
-            
-            if os_hint == 'unknown' and packets:
-                from src.os_fingerprint import detect_os_hint
-                os_hint, _ = detect_os_hint(packets)
-                
-            parties, sessions = _derive_parties_and_sessions(packets, batch_id, os_hint)
-            insert_sessions(batch_id, sessions)
-            
-            parties = enrich_parties(parties, get_geo, upsert_geo)
-                        
-            insert_parties(batch_id, parties)
+            from src.analysis_readiness import begin_upload_analysis, complete_upload_analysis, fail_upload_analysis
+            results = []
             for u in uploads:
-                update_status(u['upload_id'], 'analyzed')
-            return jsonify({'status': 'success', 'parties': len(parties)})
+                begin_upload_analysis(u)
+                try:
+                    result = complete_upload_analysis(u['upload_id'])
+                    update_status(u['upload_id'], 'analyzed')
+                    results.append(result)
+                except Exception as exc:
+                    fail_upload_analysis(u['upload_id'], exc)
+                    raise
+            return jsonify({'status': 'success', 'uploads': results,
+                            'parties': sum(item['counts']['parties'] for item in results),
+                            'sessions': sum(item['counts']['sessions'] for item in results)})
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -1050,9 +1027,13 @@ def create_app():
             return jsonify({'error': f'Report generation failed: {exc}'}), 500
     @app.route('/api/delete/batch/<batch_id>', methods=['POST'])
     def api_delete_batch(batch_id):
-        from src.webapp.db_registry import delete_batch
+        from src.webapp.db_registry import delete_batch, get_batch
         from src.webapp.db_analysis import clear_batch_analysis
+        from src.analysis_readiness import mark_upload_deleted
+        upload_ids = [upload['upload_id'] for upload in get_batch(batch_id)]
         clear_batch_analysis(batch_id)
+        for upload_id in upload_ids:
+            mark_upload_deleted(upload_id)
         delete_batch(batch_id)
         return jsonify({'status': 'deleted'})
 
@@ -1064,9 +1045,12 @@ def create_app():
         """
         from src.webapp.db_registry import list_uploads, delete_upload
         from src.webapp.db_analysis import _connect as _analysis_connect
+        from src.analysis_readiness import mark_upload_deleted
 
         # 1. Delete every pcap file from disk and clear registry
         all_uploads = list_uploads()
+        for upload in all_uploads:
+            mark_upload_deleted(upload['upload_id'])
         deleted_files = 0
         for u in all_uploads:
             stored = u.get('stored_path', '')
@@ -1086,10 +1070,16 @@ def create_app():
         # 2. Wipe all analysis tables (keep geo_cache for re-use)
         ac = _analysis_connect()
         ac.executescript("""
+            DELETE FROM party_flow_links_v2;
+            DELETE FROM session_flow_links_v2;
+            DELETE FROM crypto_events;
+            DELETE FROM crypto_flows;
+            DELETE FROM analysis_flows_v2;
             DELETE FROM whatsapp_packets;
             DELETE FROM parties;
             DELETE FROM sessions;
             DELETE FROM correlation_results;
+            DELETE FROM upload_metrics;
             DELETE FROM batch_metrics;
         """)
         ac.commit()
@@ -1113,6 +1103,9 @@ def create_app():
     @app.route('/api/delete/upload/<upload_id>', methods=['POST'])
     def api_delete_upload(upload_id):
         from src.webapp.db_registry import delete_upload
+        from src.analysis_readiness import mark_upload_deleted
+        clear_upload_packets(upload_id)
+        mark_upload_deleted(upload_id)
         delete_upload(upload_id)
         return jsonify({'status': 'deleted'})
 
@@ -1132,7 +1125,11 @@ def create_app():
         try:
             if not delete_evidence_copy(upload_id, mode):
                 return jsonify({'error': 'Evidence not found'}), 404
-            clear_upload_packets(upload_id)
+            from src.analysis_readiness import mark_upload_deleted, record_evidence_unavailable
+            if mode == 'complete':
+                clear_upload_packets(upload_id); mark_upload_deleted(upload_id)
+            else:
+                record_evidence_unavailable(upload_id, 'raw' if mode == 'raw_only' else 'filtered')
             return jsonify({'status': 'deleted', 'mode': mode})
         except ValueError as exc:
             return jsonify({'error': str(exc)}), 400
@@ -1146,7 +1143,12 @@ def create_app():
         deleted = []
         for upload_id in ids:
             if delete_evidence_copy(str(upload_id), mode):
-                clear_upload_packets(str(upload_id)); deleted.append(upload_id)
+                from src.analysis_readiness import mark_upload_deleted, record_evidence_unavailable
+                if mode == 'complete':
+                    clear_upload_packets(str(upload_id)); mark_upload_deleted(str(upload_id))
+                else:
+                    record_evidence_unavailable(str(upload_id), 'raw' if mode == 'raw_only' else 'filtered')
+                deleted.append(upload_id)
         return jsonify({'status': 'deleted', 'mode': mode, 'upload_ids': deleted})
     @app.route('/api/evidence/<batch_id>/<upload_id>/<kind>', methods=['GET'])
     def api_download_evidence(batch_id, upload_id, kind):

@@ -13,3 +13,6 @@ rewrite_app.py
 *.db-shm
 *.db-wal
 jobs/*.json
+whatsapp_ai_harness/instance/
+whatsapp_ai_harness/.venv/
+migration_backups/

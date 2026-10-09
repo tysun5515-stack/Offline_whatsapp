@@ -6,10 +6,22 @@ Joined to DB-1 via batch_id/upload_id in application code only.
 import sqlite3
 import os
 import json
+import uuid
 from typing import List, Dict, Any, Optional
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 ANALYSIS_DB_PATH = os.path.join(BASE_DIR, 'whatsapp_analysis.db')
+
+AGENT_CONTRACT_VERSION = "whatsapp-live-agent-v1"
+AGENT_RULESET_VERSION = "whatsapp-rules-2026-10"
+AGENT_RULES = (
+    ("call_count", "Call count", "A call is one qualified reconstructed session, never a packet or flow count.", "sessions"),
+    ("call_direction", "Caller and callee", "Caller/callee remains unknown unless explicit signaling or analyst metadata proves initiation direction.", "limitation"),
+    ("message_count", "Encrypted messages", "Encrypted traffic can show messaging-associated transport, not message content or a reliable count of individual messages.", "limitation"),
+    ("relay_role", "Relay endpoints", "A STUN/TURN/Meta relay is infrastructure and must not be presented as the human peer.", "limitation"),
+    ("unresolved_call", "Unresolved call candidate", "Call-like encrypted traffic remains separate from confirmed voice and video totals.", "classification"),
+    ("incomplete_capture", "Incomplete capture", "Missing evidence remains incomplete and is not replaced by an inferred negotiation or role.", "limitation"),
+)
 
 
 def _connect() -> sqlite3.Connection:
@@ -244,6 +256,50 @@ def init_analysis_db():
             FOREIGN KEY (flow_id) REFERENCES crypto_flows(flow_id)
         );
         CREATE INDEX IF NOT EXISTS idx_crypto_events_flow ON crypto_events(flow_id);
+
+        CREATE TABLE IF NOT EXISTS analysis_metadata (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS analysis_upload_state (
+            upload_id TEXT PRIMARY KEY, batch_id TEXT, filename TEXT, file_format TEXT,
+            source_sha256 TEXT, filtered_sha256 TEXT,
+            capture_start_ts REAL, capture_end_ts REAL, capture_packet_count INTEGER,
+            capture_duration_s REAL, capture_vantage TEXT, subscriber_ips TEXT,
+            state TEXT NOT NULL, analysis_revision INTEGER,
+            contract_version TEXT NOT NULL, ruleset_version TEXT NOT NULL,
+            packet_count INTEGER NOT NULL DEFAULT 0, flow_count INTEGER NOT NULL DEFAULT 0,
+            party_count INTEGER NOT NULL DEFAULT 0, session_count INTEGER NOT NULL DEFAULT 0,
+            crypto_flow_count INTEGER NOT NULL DEFAULT 0, crypto_evidence_count INTEGER NOT NULL DEFAULT 0,
+            quality_status TEXT NOT NULL DEFAULT 'pending', result_digest TEXT,
+            started_at TEXT, completed_at TEXT, error TEXT
+        );
+        CREATE TABLE IF NOT EXISTS analysis_quality_findings (
+            finding_id INTEGER PRIMARY KEY AUTOINCREMENT, upload_id TEXT,
+            revision_id INTEGER, severity TEXT NOT NULL, code TEXT NOT NULL,
+            message TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS analysis_revision_ledger (
+            revision_id INTEGER PRIMARY KEY AUTOINCREMENT, upload_id TEXT NOT NULL,
+            event TEXT NOT NULL, result_digest TEXT NOT NULL, previous_hash TEXT,
+            record_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS analysis_revision_no_update
+          BEFORE UPDATE ON analysis_revision_ledger BEGIN SELECT RAISE(ABORT, 'revision ledger is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS analysis_revision_no_delete
+          BEFORE DELETE ON analysis_revision_ledger BEGIN SELECT RAISE(ABORT, 'revision ledger is append-only'); END;
+        CREATE TABLE IF NOT EXISTS agent_rules (
+            rule_id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, category TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS upload_metrics (
+            upload_id TEXT PRIMARY KEY, batch_id TEXT, packet_count INTEGER NOT NULL,
+            flow_count INTEGER NOT NULL, whatsapp_count INTEGER NOT NULL,
+            detected_os TEXT, bypass_mode INTEGER DEFAULT 0, total_raw_packets INTEGER DEFAULT 0,
+            pass1_accepted INTEGER DEFAULT 0, pass2_dns_accepted INTEGER DEFAULT 0,
+            rejected_no_signal INTEGER DEFAULT 0, non_ip_count INTEGER DEFAULT 0,
+            reconciliation_ok INTEGER DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_state_status ON analysis_upload_state(state, capture_start_ts);
+        CREATE INDEX IF NOT EXISTS idx_agent_quality_upload ON analysis_quality_findings(upload_id, revision_id);
     """)
     try:
         conn.execute("ALTER TABLE parties ADD COLUMN media_breakdown TEXT")
@@ -283,7 +339,9 @@ def init_analysis_db():
         "endpoint_a_scope TEXT", "endpoint_b_scope TEXT", "endpoint_a_ports TEXT", "endpoint_b_ports TEXT",
         "flow_ids TEXT", "a_to_b_packets INTEGER DEFAULT 0", "b_to_a_packets INTEGER DEFAULT 0",
         "a_to_b_bytes INTEGER DEFAULT 0", "b_to_a_bytes INTEGER DEFAULT 0", "local_subscriber_ip TEXT",
-        "subscriber_resolution_source TEXT", "subscriber_resolution_confidence TEXT"
+        "subscriber_resolution_source TEXT", "subscriber_resolution_confidence TEXT",
+        "role_label TEXT", "role_source TEXT", "caveat_type TEXT", "caveat TEXT",
+        "is_server INTEGER DEFAULT 0", "location_reliable INTEGER DEFAULT 0"
     ):
         try:
             conn.execute(f"ALTER TABLE parties ADD COLUMN {column}")
@@ -366,9 +424,110 @@ def init_analysis_db():
         "INSERT OR REPLACE INTO derived_schema_metadata(component, version) VALUES (?, 2)",
         [("flows",), ("parties",), ("sessions",)],
     )
+    if not conn.execute("SELECT 1 FROM analysis_metadata WHERE key='database_instance_id'").fetchone():
+        conn.execute("INSERT INTO analysis_metadata(key,value) VALUES('database_instance_id',?)", (str(uuid.uuid4()),))
+    conn.executemany("INSERT OR REPLACE INTO analysis_metadata(key,value) VALUES(?,?)", (
+        ("agent_contract_version", AGENT_CONTRACT_VERSION),
+        ("agent_ruleset_version", AGENT_RULESET_VERSION),
+    ))
+    conn.executemany("INSERT OR REPLACE INTO agent_rules(rule_id,title,body,category) VALUES(?,?,?,?)", AGENT_RULES)
+    conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS agent_rules_fts USING fts5(rule_id UNINDEXED,title,body,category)")
+    conn.execute("DELETE FROM agent_rules_fts")
+    conn.execute("INSERT INTO agent_rules_fts(rule_id,title,body,category) SELECT rule_id,title,body,category FROM agent_rules")
+    _create_agent_views(conn)
     
     conn.commit()
     conn.close()
+
+
+def _create_agent_views(conn: sqlite3.Connection) -> None:
+    for name in (
+        "v_agent_dataset", "v_agent_captures", "v_agent_packets", "v_agent_flows",
+        "v_agent_parties", "v_agent_calls", "v_agent_endpoints", "v_agent_crypto",
+        "v_agent_crypto_evidence", "v_agent_geo", "v_agent_metrics",
+        "v_agent_correlations", "v_agent_rules", "v_agent_quality",
+    ):
+        conn.execute(f'DROP VIEW IF EXISTS "{name}"')
+    conn.executescript("""
+        CREATE VIEW v_agent_dataset AS
+        SELECT
+          (SELECT value FROM analysis_metadata WHERE key='database_instance_id') AS database_instance_id,
+          (SELECT value FROM analysis_metadata WHERE key='agent_contract_version') AS contract_version,
+          (SELECT value FROM analysis_metadata WHERE key='agent_ruleset_version') AS ruleset_version,
+          COALESCE((SELECT MAX(revision_id) FROM analysis_revision_ledger),0) AS current_revision,
+          COALESCE(SUM(CASE WHEN state='ready' THEN 1 ELSE 0 END),0) AS ready_upload_count,
+          COALESCE(SUM(CASE WHEN state='ready_no_match' THEN 1 ELSE 0 END),0) AS no_match_upload_count,
+          COALESCE(SUM(CASE WHEN state='processing' THEN 1 ELSE 0 END),0) AS processing_upload_count,
+          COALESCE(SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END),0) AS failed_upload_count,
+          COALESCE(SUM(CASE WHEN state='ready' THEN packet_count ELSE 0 END),0) AS packet_count,
+          COALESCE(SUM(CASE WHEN state='ready' THEN flow_count ELSE 0 END),0) AS flow_count,
+          COALESCE(SUM(CASE WHEN state='ready' THEN party_count ELSE 0 END),0) AS party_count,
+          COALESCE(SUM(CASE WHEN state='ready' THEN session_count ELSE 0 END),0) AS session_count,
+          COALESCE(SUM(CASE WHEN state='ready' THEN crypto_flow_count ELSE 0 END),0) AS crypto_flow_count,
+          CASE
+            WHEN SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) > 0 THEN 'fail'
+            WHEN SUM(CASE WHEN quality_status='warn' THEN 1 ELSE 0 END) > 0 THEN 'warn'
+            ELSE 'pass'
+          END AS quality_status
+        FROM analysis_upload_state WHERE state != 'deleted';
+
+        CREATE VIEW v_agent_captures AS
+          SELECT upload_id,batch_id,filename,file_format,source_sha256,filtered_sha256,
+                 capture_start_ts,capture_end_ts,capture_packet_count,capture_duration_s,
+                 capture_vantage,subscriber_ips,state,analysis_revision,contract_version,
+                 ruleset_version,packet_count,flow_count,party_count,session_count,
+                 crypto_flow_count,crypto_evidence_count,quality_status,result_digest,
+                 started_at,completed_at,error
+          FROM analysis_upload_state WHERE state IN ('ready','ready_no_match');
+
+        CREATE VIEW v_agent_packets AS
+          SELECT p.id AS packet_id,p.* FROM whatsapp_packets p
+          JOIN analysis_upload_state s ON s.upload_id=p.upload_id AND s.state='ready';
+        CREATE VIEW v_agent_flows AS
+          SELECT f.*,s.batch_id FROM analysis_flows_v2 f
+          JOIN analysis_upload_state s ON s.upload_id=f.upload_id AND s.state='ready';
+        CREATE VIEW v_agent_parties AS
+          SELECT p.* FROM parties p
+          JOIN analysis_upload_state s ON s.upload_id=p.upload_id AND s.state='ready';
+        CREATE VIEW v_agent_calls AS
+          SELECT x.*, x.media_type AS call_type,
+                 CASE WHEN x.media_type='unresolved' THEN 'candidate' ELSE 'confirmed' END AS confirmation_class,
+                 'unknown_unless_proven' AS role_status, x.burst_count AS total_packets
+          FROM sessions x JOIN analysis_upload_state s ON s.upload_id=x.capture_id AND s.state='ready';
+        CREATE VIEW v_agent_endpoints AS
+          SELECT endpoint_ip,MIN(first_seen) AS first_seen,MAX(last_seen) AS last_seen,
+                 COUNT(DISTINCT upload_id) AS capture_count,COUNT(DISTINCT flow_id) AS flow_count,
+                 MAX(observed_as_subscriber) AS observed_as_subscriber
+          FROM (
+            SELECT upload_id,flow_id,endpoint_a_ip AS endpoint_ip,first_seen,last_seen,
+                   CASE WHEN endpoint_a_ip=local_subscriber_ip THEN 1 ELSE 0 END AS observed_as_subscriber
+            FROM v_agent_flows
+            UNION ALL
+            SELECT upload_id,flow_id,endpoint_b_ip,first_seen,last_seen,
+                   CASE WHEN endpoint_b_ip=local_subscriber_ip THEN 1 ELSE 0 END
+            FROM v_agent_flows
+          ) WHERE endpoint_ip IS NOT NULL GROUP BY endpoint_ip;
+        CREATE VIEW v_agent_crypto AS
+          SELECT c.* FROM crypto_flows c
+          JOIN analysis_upload_state s ON s.upload_id=c.upload_id AND s.state='ready';
+        CREATE VIEW v_agent_crypto_evidence AS
+          SELECT e.* FROM crypto_events e
+          JOIN analysis_upload_state s ON s.upload_id=e.upload_id AND s.state='ready';
+        CREATE VIEW v_agent_geo AS
+          SELECT g.* FROM geo_cache g WHERE g.ip IN (SELECT endpoint_ip FROM v_agent_endpoints);
+        CREATE VIEW v_agent_metrics AS
+          SELECT m.* FROM upload_metrics m
+          JOIN analysis_upload_state s ON s.upload_id=m.upload_id AND s.state IN ('ready','ready_no_match');
+        CREATE VIEW v_agent_correlations AS
+          SELECT c.* FROM correlation_results c
+          JOIN analysis_upload_state a ON a.upload_id=c.upload_id_a AND a.state='ready'
+          JOIN analysis_upload_state b ON b.upload_id=c.upload_id_b AND b.state='ready';
+        CREATE VIEW v_agent_rules AS SELECT * FROM agent_rules;
+        CREATE VIEW v_agent_quality AS
+          SELECT q.* FROM analysis_quality_findings q
+          LEFT JOIN analysis_upload_state s ON s.upload_id=q.upload_id
+          WHERE q.upload_id IS NULL OR s.state IN ('ready','ready_no_match','failed');
+    """)
 
 def upsert_batch_metrics(batch_id: str, metrics: Dict[str, Any]):
     conn = _connect()
@@ -387,6 +546,34 @@ def upsert_batch_metrics(batch_id: str, metrics: Dict[str, Any]):
     )
     conn.commit()
     conn.close()
+
+
+def upsert_upload_metrics(upload_id: str, batch_id: str, metrics: Dict[str, Any]):
+    """Persist authoritative per-upload metrics and refresh the legacy batch aggregate."""
+    conn = _connect()
+    values = (
+        upload_id, batch_id, metrics.get('packet_count', 0), metrics.get('flow_count', 0),
+        metrics.get('whatsapp_count', 0), metrics.get('detected_os', 'unknown'),
+        1 if metrics.get('bypass_mode') else 0,
+        metrics.get('total_raw_packets', metrics.get('packet_count', 0)),
+        metrics.get('pass1_accepted', 0), metrics.get('pass2_dns_accepted', 0),
+        metrics.get('rejected_no_signal', 0), metrics.get('non_ip_count', 0),
+        1 if metrics.get('reconciliation_ok', True) else 0,
+    )
+    conn.execute("""INSERT OR REPLACE INTO upload_metrics
+        (upload_id,batch_id,packet_count,flow_count,whatsapp_count,detected_os,bypass_mode,
+         total_raw_packets,pass1_accepted,pass2_dns_accepted,rejected_no_signal,non_ip_count,reconciliation_ok)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
+    aggregate = conn.execute("""SELECT COALESCE(SUM(packet_count),0),COALESCE(SUM(flow_count),0),
+        COALESCE(SUM(whatsapp_count),0),MAX(detected_os),MAX(bypass_mode),COALESCE(SUM(total_raw_packets),0),
+        COALESCE(SUM(pass1_accepted),0),COALESCE(SUM(pass2_dns_accepted),0),
+        COALESCE(SUM(rejected_no_signal),0),COALESCE(SUM(non_ip_count),0),MIN(reconciliation_ok)
+        FROM upload_metrics WHERE batch_id=?""", (batch_id,)).fetchone()
+    conn.execute("""INSERT OR REPLACE INTO batch_metrics
+        (batch_id,packet_count,flow_count,whatsapp_count,detected_os,bypass_mode,total_raw_packets,
+         pass1_accepted,pass2_dns_accepted,rejected_no_signal,non_ip_count,reconciliation_ok)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (batch_id, *aggregate))
+    conn.commit(); conn.close()
 
 def get_batch_metrics(batch_id: str) -> Optional[Dict[str, Any]]:
     conn = _connect()
@@ -535,12 +722,16 @@ def insert_whatsapp_packets(batch_id: str, upload_id: str, filename: str, packet
     return count, packet_numbers
 
 
-def insert_parties(batch_id: str, parties: List[Dict[str, Any]]):
+def insert_parties(batch_id: str, parties: List[Dict[str, Any]], upload_id: Optional[str] = None):
     conn = _connect()
-    old_party_ids = [row[0] for row in conn.execute("SELECT party_id FROM parties WHERE batch_id = ?", (batch_id,))]
+    if upload_id is None:
+        predicate, key = "batch_id = ?", batch_id
+    else:
+        predicate, key = "upload_id = ?", upload_id
+    old_party_ids = [row[0] for row in conn.execute(f"SELECT party_id FROM parties WHERE {predicate}", (key,))]
     if old_party_ids:
         conn.executemany("DELETE FROM party_flow_links_v2 WHERE party_id = ?", [(pid,) for pid in old_party_ids])
-    conn.execute("DELETE FROM parties WHERE batch_id = ?", (batch_id,))
+    conn.execute(f"DELETE FROM parties WHERE {predicate}", (key,))
     conn.executemany(
         """INSERT OR REPLACE INTO parties
            (party_id, batch_id, remote_ip, remote_port, protocol,
@@ -802,6 +993,20 @@ def get_parties(batch_id: str) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def get_parties_scope(upload_ids: List[str], start_ts: Optional[float] = None,
+                      end_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+    if not upload_ids:
+        return []
+    conn = _connect(); marks = ','.join('?' for _ in upload_ids)
+    where, params = [f"upload_id IN ({marks})"], list(upload_ids)
+    if start_ts is not None:
+        where.append("last_seen >= ?"); params.append(start_ts)
+    if end_ts is not None:
+        where.append("first_seen < ?"); params.append(end_ts)
+    rows = conn.execute(f"SELECT * FROM parties WHERE {' AND '.join(where)} ORDER BY packet_count DESC", params).fetchall()
+    conn.close(); return [dict(row) for row in rows]
+
+
 def get_geo(ip: str) -> Optional[Dict[str, Any]]:
     conn = _connect()
     row = conn.execute("SELECT * FROM geo_cache WHERE ip = ?", (ip,)).fetchone()
@@ -824,12 +1029,16 @@ def upsert_geo(ip: str, data: Dict[str, Any]):
     conn.close()
 
 
-def insert_sessions(batch_id: str, sessions: List[Dict[str, Any]]):
+def insert_sessions(batch_id: str, sessions: List[Dict[str, Any]], upload_id: Optional[str] = None):
     conn = _connect()
-    old_session_ids = [row[0] for row in conn.execute("SELECT session_id FROM sessions WHERE batch_id = ?", (batch_id,))]
+    if upload_id is None:
+        predicate, key = "batch_id = ?", batch_id
+    else:
+        predicate, key = "capture_id = ?", upload_id
+    old_session_ids = [row[0] for row in conn.execute(f"SELECT session_id FROM sessions WHERE {predicate}", (key,))]
     if old_session_ids:
         conn.executemany("DELETE FROM session_flow_links_v2 WHERE session_id = ?", [(sid,) for sid in old_session_ids])
-    conn.execute("DELETE FROM sessions WHERE batch_id = ?", (batch_id,))
+    conn.execute(f"DELETE FROM sessions WHERE {predicate}", (key,))
     conn.executemany(
         """INSERT INTO sessions
            (session_id, batch_id, party_id, start_ts, end_ts, media_type, total_bytes, burst_count, summary_text,
@@ -866,6 +1075,20 @@ def get_sessions(batch_id: str) -> List[Dict[str, Any]]:
     conn.close()
     return [dict(r) for r in rows]
 
+
+def get_sessions_scope(upload_ids: List[str], start_ts: Optional[float] = None,
+                       end_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+    if not upload_ids:
+        return []
+    conn = _connect(); marks = ','.join('?' for _ in upload_ids)
+    where, params = [f"capture_id IN ({marks})"], list(upload_ids)
+    if start_ts is not None:
+        where.append("end_ts >= ?"); params.append(start_ts)
+    if end_ts is not None:
+        where.append("start_ts < ?"); params.append(end_ts)
+    rows = conn.execute(f"SELECT * FROM sessions WHERE {' AND '.join(where)} ORDER BY start_ts", params).fetchall()
+    conn.close(); return [dict(row) for row in rows]
+
 def clear_batch_analysis(batch_id: str):
     """Remove all analysis data for a batch."""
     conn = _connect()
@@ -883,6 +1106,8 @@ def clear_batch_analysis(batch_id: str):
     conn.execute("DELETE FROM whatsapp_packets WHERE batch_id = ?", (batch_id,))
     conn.execute("DELETE FROM parties WHERE batch_id = ?", (batch_id,))
     conn.execute("DELETE FROM sessions WHERE batch_id = ?", (batch_id,))
+    conn.execute("DELETE FROM upload_metrics WHERE batch_id = ?", (batch_id,))
+    conn.execute("DELETE FROM batch_metrics WHERE batch_id = ?", (batch_id,))
     conn.commit()
     conn.close()
 
@@ -890,13 +1115,22 @@ def clear_batch_analysis(batch_id: str):
 def clear_upload_packets(upload_id: str) -> None:
     conn = _connect()
     flow_ids = [row[0] for row in conn.execute('SELECT flow_id FROM analysis_flows_v2 WHERE upload_id = ?', (upload_id,))]
+    party_ids = [row[0] for row in conn.execute('SELECT party_id FROM parties WHERE upload_id = ?', (upload_id,))]
+    session_ids = [row[0] for row in conn.execute('SELECT session_id FROM sessions WHERE capture_id = ?', (upload_id,))]
     if flow_ids:
         _delete_in_chunks(conn, 'party_flow_links_v2', 'flow_id', flow_ids)
         _delete_in_chunks(conn, 'session_flow_links_v2', 'flow_id', flow_ids)
+    if party_ids:
+        _delete_in_chunks(conn, 'party_flow_links_v2', 'party_id', party_ids)
+    if session_ids:
+        _delete_in_chunks(conn, 'session_flow_links_v2', 'session_id', session_ids)
     conn.execute('DELETE FROM crypto_events WHERE upload_id = ?', (upload_id,))
     conn.execute('DELETE FROM crypto_flows WHERE upload_id = ?', (upload_id,))
     conn.execute('DELETE FROM analysis_flows_v2 WHERE upload_id = ?', (upload_id,))
+    conn.execute('DELETE FROM parties WHERE upload_id = ?', (upload_id,))
+    conn.execute('DELETE FROM sessions WHERE capture_id = ?', (upload_id,))
     conn.execute('DELETE FROM whatsapp_packets WHERE upload_id = ?', (upload_id,))
+    conn.execute('DELETE FROM upload_metrics WHERE upload_id = ?', (upload_id,))
     conn.commit(); conn.close()
 
 

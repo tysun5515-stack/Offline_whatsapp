@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>WA Forensic Intelligence</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">WI</span><div><strong>WA Intelligence</strong><small>Forensic query harness</small></div></div>
+      <nav aria-label="Workspace navigation">
+        <button class="nav-item active" data-view="investigate"><span>⌕</span> Investigate</button>
+        <button class="nav-item" data-view="history"><span>◷</span> Investigations</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="security-note"><span class="status-dot"></span><div><strong>Read-only evidence</strong><small>No PCAP payload access</small></div></div>
+        <div id="model-card" class="model-card"><small>LOCAL MODEL</small><strong>Checking Ollama…</strong></div>
+      </div>
+    </aside>
+
+    <div class="main-shell">
+      <header class="topbar">
+        <div><p class="eyebrow">LIVE FORENSIC WORKSPACE</p><h1>Investigation console</h1></div>
+        <div class="top-actions"><button id="refresh" class="icon-button" title="Refresh database">↻</button><span id="health" class="health-pill pending">Connecting…</span></div>
+      </header>
+
+      <main>
+        <section id="database-status" class="database-strip" aria-live="polite">
+          <div class="db-identity"><span class="db-icon">DB</span><div><strong>Live analysis database</strong><small id="database-meta">Loading contract…</small></div></div>
+          <div class="metric"><strong id="metric-captures">—</strong><span>Ready captures</span></div>
+          <div class="metric"><strong id="metric-packets">—</strong><span>Packets</span></div>
+          <div class="metric"><strong id="metric-flows">—</strong><span>Flows</span></div>
+          <div class="metric"><strong id="metric-parties">—</strong><span>Parties</span></div>
+          <div class="metric"><strong id="metric-calls">—</strong><span>Calls</span></div>
+        </section>
+
+        <section id="empty-warning" class="empty-warning" hidden>
+          <div class="warning-icon">!</div><div><strong>No ready evidence is currently available</strong><p>The database contains no upload in the <code>ready</code> state. Complete an upload in the forensic analyzer, then refresh this page. The harness never analyzes deleted, failed, or partially processed evidence.</p></div>
+        </section>
+
+        <div id="investigate-view" class="workspace-grid">
+          <div class="workspace-main">
+            <section class="query-card">
+              <div class="section-heading"><div><p class="section-kicker">ASK THE DATABASE</p><h2>What do you need to establish?</h2></div><span class="privacy-badge">Local processing</span></div>
+              <div class="prompt-wrap">
+                <textarea id="question" rows="4" maxlength="4000" placeholder="Example: Which IP carried the most WhatsApp traffic, and what evidence supports that ranking?"></textarea>
+                <div class="prompt-footer"><span><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to run</span><span id="question-count">0 / 4000</span></div>
+              </div>
+              <div class="suggestions" aria-label="Example questions">
+                <button class="suggestion">Which IP carried the most traffic?</button>
+                <button class="suggestion">Summarize activity by protocol</button>
+                <button class="suggestion">Show unresolved call candidates</button>
+                <button class="suggestion">Explain the crypto evidence</button>
+              </div>
+              <details class="scope-panel">
+                <summary><span>Investigation scope</span><small>Optional filters</small></summary>
+                <div class="scope-grid">
+                  <label>Start date/time<input id="start-time" type="datetime-local"></label>
+                  <label>End date/time<input id="end-time" type="datetime-local"></label>
+                  <label>Endpoint IPs<input id="endpoint-ips" type="text" placeholder="10.0.0.4, 31.13.70.1"></label>
+                  <label>Call type<select id="call-type"><option value="">All qualified sessions</option><option value="voice">Confirmed voice</option><option value="video">Confirmed video</option><option value="unresolved">Unresolved candidate</option></select></label>
+                  <label>Upload IDs<input id="upload-ids" type="text" placeholder="Comma separated"></label>
+                  <label>Batch IDs<input id="batch-ids" type="text" placeholder="Comma separated"></label>
+                </div>
+              </details>
+              <div class="run-row"><button id="ask" class="primary-button"><span>Run investigation</span><span>→</span></button><p id="status" role="status">Ready for a question.</p></div>
+            </section>
+
+            <section id="answer-panel" class="answer-card" hidden>
+              <div class="answer-topline"><div><p class="section-kicker">VERIFIED FINDING</p><h2>Investigation result</h2></div><div class="badges"><span id="route" class="route-badge"></span><span id="latency" class="route-badge"></span></div></div>
+              <div id="answer" class="answer-copy"></div>
+              <div id="limitations"></div>
+              <div id="fact-cards" class="fact-grid"></div>
+              <section id="table-section" class="result-section" hidden><div class="result-header"><h3>Evidence-backed results</h3><span id="row-summary"></span></div><div id="tables" class="tables"></div></section>
+              <section class="result-section"><div class="result-header"><h3>Evidence citations</h3><span id="citation-count"></span></div><div id="citations" class="citation-grid"></div></section>
+              <div id="exports" class="export-row"></div>
+            </section>
+          </div>
+
+          <aside class="analysis-rail">
+            <section class="rail-card"><div class="rail-title"><h3>Analysis pipeline</h3><span id="pipeline-state" class="mini-status">Idle</span></div><div id="pipeline" class="pipeline"><div class="pipeline-empty">Run a question to see the validated execution plan.</div></div></section>
+            <section class="rail-card"><div class="rail-title"><h3>Recent investigations</h3><button id="view-all-history" class="text-button">View all</button></div><div id="history-preview" class="history-list"><div class="skeleton"></div><div class="skeleton short"></div></div></section>
+            <section class="rail-card guardrails"><h3>Forensic guardrails</h3><ul><li>Counts come from persisted records</li><li>Caller/callee stays unknown unless proven</li><li>Infrastructure is not treated as a person</li><li>No decrypted content is inferred</li></ul></section>
+          </aside>
+        </div>
+
+        <section id="history-view" class="history-page" hidden>
+          <div class="page-heading"><div><p class="section-kicker">APPEND-ONLY AUDIT</p><h2>Investigation history</h2></div><button id="back-investigate" class="secondary-button">← Back to investigation</button></div>
+          <div id="history" class="history-table"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="evidence-dialog">
+    <div class="dialog-head"><div><p class="section-kicker">IMMUTABLE SNAPSHOT</p><h2>Evidence citation</h2></div><button id="close-dialog" class="icon-button">×</button></div>
+    <div id="evidence-reference" class="reference-grid"></div><pre id="evidence-record"></pre>
+  </dialog>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
