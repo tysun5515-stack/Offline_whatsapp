@@ -11,7 +11,7 @@ if not exist "%BUNDLE_DIR%project\.venv\Scripts\python.exe" (
 )
 
 echo Starting at http://127.0.0.1:5000 - press Ctrl+C to stop.
-start "" /b cmd /c "timeout /t 3 /nobreak ^>nul ^&^& start http://127.0.0.1:5000"
+start "" /b "%BUNDLE_DIR%project\open_browser_after_delay.cmd"
 call "%BUNDLE_DIR%project\run_offline.cmd"
 set "APP_EXIT=%ERRORLEVEL%"
 if not "%APP_EXIT%"=="0" pause
