@@ -7,6 +7,8 @@ FIRST TIME SETUP (do this once only):
 1. Copy this entire "WhatsApp_Offline_Bundle" folder
    from the USB drive to your Desktop (or anywhere).
 
+NOTE: When move the offline_bundle to another system  delete virtual environment.
+
 2. Make sure the following installer files are in the
    same folder as INSTALL.bat:
      - python-3.12.0-amd64.exe
