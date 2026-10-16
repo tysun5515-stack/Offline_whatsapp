@@ -1,10 +1,8 @@
+# Primary offline analyzer. The optional AI companion has its own requirements file.
 Flask==3.0.3
+Werkzeug==3.1.8
+Jinja2==3.1.6
+
+# Packet cryptography and local GeoLite lookup
+cryptography==50.0.2
 geoip2==4.8.0
-plotly
-pyshark
-matplotlib
-scipy
-numpy
-cryptography
-cffi
-pycparser

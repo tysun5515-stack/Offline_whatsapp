@@ -1,6 +1,5 @@
 import sys
 import os
-import csv
 import argparse
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -9,15 +8,14 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.pcap_reader import read_packets
 from src.packet_parser import parse_packet
-from src.flow_builder import rebuild_flows
 from src.whatsapp_filter import (
     check_domain_matching, check_cidr_matching, 
     check_inference_matching, check_port_matching,
-    guess_media_type, resolve_timeout, ConfirmedServerRegistry,
+    guess_media_type, ConfirmedServerRegistry,
     resolve_activity_labels, resolve_final_label, STRONG_DOMAINS,
     _domain_matches_suffix, is_whatsapp_anchored,
 )
-from src.os_fingerprint import detect_os_hint, OS_TIMEOUTS
+from src.os_fingerprint import detect_os_hint
 
 
 def _check_flow_cidr_matching(flow: Dict[str, Any]) -> Tuple[str, List[str], Any]:
@@ -103,6 +101,17 @@ def process_pcap_to_whatsapp_packets(
     explicit_subscriber_ips: Optional[List[str]] = None,
     job_id: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Any, List[Dict[str, Any]], Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
+    """
+    Process a PCAP file through the packet filtering and flow reconstruction pipeline.
+
+    GENERATOR CONTRACT:
+        Returns `(stats, packet_generator, flows_container, crypto_data_container)`.
+        `packet_generator` is a streaming generator that yields individual parsed
+        WhatsApp packets. `stats`, `flows_container`, and `crypto_data_container`
+        are mutable references populated incrementally as `packet_generator` is consumed.
+        Callers MUST iterate over or consume `packet_generator` (e.g., via `list(generator)`)
+        before reading final counts such as `stats['whatsapp_count']` or `stats['packet_count']`.
+    """
     import os
     from src.flow_builder import rebuild_flows_stream
     
@@ -270,8 +279,7 @@ def run_pipeline(pcap_path, output_dir):
         stats, all_whatsapp_packets, flows, crypto_data = process_pcap_to_whatsapp_packets(pcap_path)
         all_packets_list = list(all_whatsapp_packets)
         
-        # We don't save CSVs or write to old DB in the new architecture,
-        # but for legacy compatibility we can just print stats.
+        # The CLI reports results; persistence is owned by the web job workflow.
         print(f"Pipeline complete. Parsed {stats['packet_count']} packets -> {stats['flow_count']} flows.")
         print(f"Detected OS: {stats['detected_os']} (Timeout: {stats['os_timeout_used']}s)")
         print(f"Found {stats['whatsapp_count']} WhatsApp packets.")

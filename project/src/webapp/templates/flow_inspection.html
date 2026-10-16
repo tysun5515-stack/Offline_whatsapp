@@ -238,7 +238,7 @@
     }
 
     tbody.innerHTML = filtered.map(f => {
-      // Basic formatting placeholders for merged fields we expect to have
+      // Format optional fields shared by the merged flow records.
       const transportVal = f.transport || 'unknown';
       const protoBadge = transportVal.replace('_', ' ').toUpperCase();
       const protoClass = transportVal === 'quic' ? 'badge-udp' : (transportVal === 'tls_tcp' ? 'badge-tcp' : 'badge-tcp');

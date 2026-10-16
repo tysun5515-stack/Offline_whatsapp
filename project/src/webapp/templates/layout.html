@@ -4,10 +4,9 @@
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
 <title>{% block title %}WhatsApp Traffic Analysis{% endblock %}</title>
-<script src="{{ url_for('static', filename='vendor/js/tailwindcss.js') }}"></script>
+<link href="{{ url_for('static', filename='vendor/css/tailwind.min.css') }}" rel="stylesheet"/>
 <link href="{{ url_for('static', filename='vendor/css/all.min.css') }}" rel="stylesheet"/>
 <script src="{{ url_for('static', filename='vendor/js/chart.js') }}"></script>
-<script src="{{ url_for('static', filename='vendor/js/plotly.min.js') }}"></script>
 <style data-purpose="custom-styles">
     @import url('{{ url_for("static", filename="vendor/css/inter.css") }}');
     body {
@@ -43,22 +42,6 @@
       background: #a8a8a8; 
     }
   </style>
-<script data-purpose="tailwind-config">
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            whatsapp: {
-              light: '#dcf8c6',
-              main: '#25D366',
-              dark: '#128C7E',
-            },
-            primary: '#3b82f6', /* Blue-500 */
-          }
-        }
-      }
-    }
-  </script>
 </head>
 <body class="flex h-screen overflow-hidden text-gray-800">
 <!-- BEGIN: Sidebar -->
@@ -74,20 +57,20 @@
 </div>
 <!-- Action Button -->
 <div class="p-4">
-<a href="{{ url_for('interface1') }}" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md flex items-center justify-center transition-colors text-sm font-medium">
+<a href="{{ url_for('uploads') }}" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md flex items-center justify-center transition-colors text-sm font-medium">
 <i class="fa-solid fa-plus mr-2"></i> Register Evidence
 </a>
 </div>
 <!-- Navigation -->
 <nav class="px-2 space-y-1 overflow-y-auto">
 <a class="{% if active_interface == 0 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('dashboard', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-house w-5 mr-3"></i>Dashboard</a>
-<a class="{% if active_interface == 1 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('interface1') }}"><i class="fa-solid fa-upload w-5 mr-3"></i>Upload Evidence</a>
+<a class="{% if active_interface == 1 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('uploads') }}"><i class="fa-solid fa-upload w-5 mr-3"></i>Upload Evidence</a>
 
-<a class="{% if active_interface == 2 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('interface2', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-filter w-5 mr-3"></i>Filter Traffic</a>
+<a class="{% if active_interface == 2 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('filtering', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-filter w-5 mr-3"></i>Filter Traffic</a>
 <a class="{% if active_interface == 7 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('classification', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-magnifying-glass-chart w-5 mr-3"></i>Classification</a>
 <a class="{% if active_interface == 8 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('flow_inspection', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-network-wired w-5 mr-3"></i>Flow Deep Inspection</a>
-<a class="{% if active_interface == 3 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('interface3', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-chart-simple w-5 mr-3"></i>Core Analysis</a>
-<a class="{% if active_interface == 5 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('interface5', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-file-lines w-5 mr-3"></i>Report Generation</a>
+<a class="{% if active_interface == 3 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('analysis', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-chart-simple w-5 mr-3"></i>Core Analysis</a>
+<a class="{% if active_interface == 5 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('reports', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-file-lines w-5 mr-3"></i>Report Generation</a>
 <a class="{% if active_interface == 6 %}sidebar-active{% else %}text-gray-600 hover:bg-gray-50{% endif %} flex items-center px-4 py-2 text-sm rounded-md" href="{{ url_for('evidence_storage', view='raw', capture_from=capture_from, capture_to=capture_to) }}"><i class="fa-solid fa-hard-drive w-5 mr-3"></i>Evidence Storage</a>
 </nav>
 </div>

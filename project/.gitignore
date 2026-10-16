@@ -1,18 +1,54 @@
+# Python bytecode & cache
 __pycache__/
-*.pyc
-*.db
-uploads/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual Environments
+.venv/
 venv/
-.env
-.DS_Store
 .venv_win/
-check.py
-rewrite_app.py
-*.pcap
-*.pcapng
+env/
+ENV/
+
+# Databases
+*.db
 *.db-shm
 *.db-wal
-jobs/*.json
+*.sqlite
+*.sqlite3
+
+# MaxMind GeoIP databases are intentionally retained for offline runtime use.
+*.mmdb
+!GeoLite2-City.mmdb
+!GeoLite2-ASN.mmdb
+
+# Captures & Evidence storage
+*.pcap
+*.pcapng
+uploads/
+RAW_PCAP/
+Filtered_PCAP/
+
+# Job queues & runtime outputs
+jobs/
+results/
+test_output/
+scratch/
+migration_backups/
+finalized_datasets/
+validation/
+node_modules/
+npm-debug.log*
+tmp/
+output/
+
+# AI Harness subproject runtime files
 whatsapp_ai_harness/instance/
 whatsapp_ai_harness/.venv/
-migration_backups/
+whatsapp_ai_harness/__pycache__/
+
+# OS & Environment
+.env
+.DS_Store
+Thumbs.db

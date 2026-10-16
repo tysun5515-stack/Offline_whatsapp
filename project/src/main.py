@@ -1,96 +1,37 @@
-import pyshark
-import csv
+"""
+main.py — Command-line interface for the WhatsApp Offline Traffic Analyser.
+Processes PCAP/PCAPNG network captures through the packet identification,
+flow reconstruction, and traffic classification pipeline.
+"""
+import sys
 import os
-import whatsapp_analysis  
+import argparse
 
+# Ensure src is in the path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-def convert_pcap_to_csv(pcap_file_path, csv_file_path):
-    
-    capture = pyshark.FileCapture(pcap_file_path, display_filter='ip')  # Use display_filter if needed
-
-    # Get the sniff time of the first packet
-    first_sniff_time = None
-    first_packet = None
-    for packet in capture:
-        first_packet = packet
-        first_sniff_time = packet.sniff_time
-        break
-
-    if first_packet is None:
-        print(f"Warning: PCAP file {pcap_file_path} contains no packets matching the filter.")
-        return
-
-    # Create a CSV file and write headers
-    with open(csv_file_path, 'w', newline='') as csv_file:
-        fieldnames = ['No.', 'Time', 'Source', 'Destination', 'Protocol', 'Length', 'Info']
-        csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        csv_writer.writeheader()
-
-        def write_packet_row(packet):
-            # Calculate Time by seconds as the time of the current packet - time of the first packet
-            delta = packet.sniff_time - first_sniff_time
-            delta_seconds = delta.total_seconds()  # Convert timedelta to seconds
-
-            packet_data = {
-                'No.': packet.number,
-                'Time': delta_seconds,
-                'Source': packet.ip.src if 'ip' in packet else '',
-                'Destination': packet.ip.dst if 'ip' in packet else '',
-                'Protocol': packet.highest_layer,
-                'Length': packet.length,
-                'Info': packet.info if hasattr(packet, 'info') else ''
-            }
-            csv_writer.writerow(packet_data)
-
-        # Write the cached first packet
-        write_packet_row(first_packet)
-
-        # Iterate through remaining packets and write to CSV
-        for packet in capture:
-            write_packet_row(packet)
-
-    print(f'PCAP file converted to CSV: {csv_file_path}')
+from src.pipeline import run_pipeline
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="WhatsApp Offline Traffic Analyser - Command Line Interface"
+    )
+    parser.add_argument("pcap_file", help="Path to the input PCAP/PCAPNG capture file")
+    parser.add_argument(
+        "--output-dir",
+        "-o",
+        default="results",
+        help="Directory to store pipeline execution results (default: results)"
+    )
+    args = parser.parse_args()
 
+    if not os.path.isfile(args.pcap_file):
+        print(f"Error: PCAP file not found: {args.pcap_file}", file=sys.stderr)
+        sys.exit(1)
 
-
-    
-    
-
-
-    # Modify this list to specify different WhatsApp group types for analysis
-    GROUPS = ['Message', 'Photo', 'Audio', 'Video']
-    # GROUPS = ['YesFilter', 'NoFilter']
-    for group in GROUPS:
-        BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-        pcap_file_path = os.path.join(BASE_DIR, "resources", f"{group}s_record.pcap")
-        csv_file_path = os.path.join(BASE_DIR, "resources", f"{group}s_record.csv")
-
-    
-        
-      
-        print("Current working directory:", os.getcwd())
-        print("Expected path:", os.path.abspath(pcap_file_path))
-        print("Exists:", os.path.exists(pcap_file_path))
-
-        
-        if not os.path.exists(pcap_file_path):
-            raise FileNotFoundError(f"{pcap_file_path} does not exist.")
-        try:
-            print(f"Converting {pcap_file_path} -> {csv_file_path} ...")
-            convert_pcap_to_csv(pcap_file_path, csv_file_path)
-            print("Conversion complete.")
-        except Exception as e:
-            print(f"Error occurred during conversion: {e}")
-        try:
-            print(f"Starting plots for {csv_file_path} ...")
-            whatsapp_analysis.creating_plots(csv_file_path, group)
-            print("Plots generated.")
-        except Exception as e:
-            print(f"Error occurred during plot generation: {e}")
+    print(f"Starting WhatsApp traffic analysis on {args.pcap_file}...")
+    run_pipeline(args.pcap_file, args.output_dir)
 
 
 if __name__ == "__main__":

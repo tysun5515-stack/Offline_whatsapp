@@ -1,0 +1,1280 @@
+{% extends "layout.html" %}
+{% block title %}Core Analysis — WA Analytics{% endblock %}
+
+{% block dashboard %}
+
+{% set is_registered = uploads | selectattr('status', 'equalto', 'registered') | list | length == uploads | length %}
+{% set is_analyzed = uploads | selectattr('status', 'equalto', 'analyzed') | list | length > 0 %}
+{% set batch_status = 'registered' %}
+{% if is_analyzed %}
+{% set batch_status = 'analyzed' %}
+{% elif uploads | selectattr('status', 'equalto', 'filtered') | list | length > 0 %}
+{% set batch_status = 'filtered' %}
+{% endif %}
+
+<div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+  <div>
+    <nav class="text-sm text-gray-500 mb-1">
+      Pipeline &raquo; <span class="text-indigo-600 font-semibold">Core Analysis</span>
+    </nav>
+    <h1 class="text-2xl font-bold text-gray-800">Core Analysis &amp; Geolocation (Case Level)</h1>
+    <p class="text-sm text-gray-500">Activity-aware grouping · Call Geo-Map · GeoIP &amp; Subdivision · VPN / CGNAT caveats
+    </p>
+  </div>
+  {% if uploads %}
+  <div class="flex gap-2 mt-2 md:mt-0">
+    <button
+      class="inline-flex items-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md shadow-sm transition-colors"
+      id="btn-run-analyze-case">
+      {% if batch_status == 'analyzed' %}↺ Re-run Analysis{% else %}▶ Run Analysis on Case{% endif %}
+    </button>
+    {% if batch_status == 'analyzed' %}
+    <span class="inline-flex items-center px-3 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded-md border border-green-200">✓ Case
+      Analyzed</span>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{% if not uploads %}
+<div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded-md flex items-center space-x-2">
+  ⚠ No case selected. Use the case selector in the sidebar.
+</div>
+{% elif batch_status == 'registered' %}
+<div
+  class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded-md flex items-center justify-between">
+  <span>⚠ This case has not been filtered yet.</span>
+  <a href="{{ url_for('filtering', capture_from=capture_from, capture_to=capture_to) }}"
+    class="inline-flex items-center px-3 py-1 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-100"
+    style="margin-left:8px;">Go to Filter →</a>
+</div>
+{% else %}
+
+<div id="analyze-status" class="hidden mb-3"></div>
+
+{% if bypass_mode %}
+<div class="bg-amber-50 border-l-4 border-amber-500 text-amber-900 p-4 mb-4 rounded-md text-sm">
+  <strong>Bypass mode is active.</strong> Confirmed WhatsApp entities and retained unclassified traffic are shown
+  separately below. Unclassified traffic has no WhatsApp-specific conclusion.
+</div>
+{% endif %}
+
+{% if parties %}
+<style>
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .kpi {
+    background: #fff;
+    border-radius: 8px;
+    padding: 12px 14px;
+    border: 0.5px solid var(--border, #e5e7eb);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  }
+
+  .kpi-l {
+    font-size: 11px;
+    color: #6b7280;
+    font-weight: 500;
+  }
+
+  .kpi-v {
+    font-size: 20px;
+    font-weight: 700;
+    color: #1f2937;
+    margin-top: 4px;
+    line-height: 1.1;
+  }
+
+  .kpi-v.warn {
+    color: #d97706;
+  }
+
+  .kpi-v.call-highlight {
+    color: #059669;
+  }
+
+  .split {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    border: 0.5px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    background: #fff;
+    overflow: hidden;
+    margin-bottom: 24px;
+  }
+
+  .file-panel {
+    border-right: 0.5px solid var(--border, #e5e7eb);
+    background: #fafafa;
+  }
+
+  .fp-head {
+    padding: 12px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #4b5563;
+    border-bottom: 0.5px solid var(--border, #e5e7eb);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #f9fafb;
+  }
+
+  .fp-head button {
+    font-size: 11px;
+    color: #4f46e5;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .file-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    cursor: pointer;
+    border-bottom: 0.5px solid var(--border, #e5e7eb);
+    transition: background 0.12s;
+    background: #fff;
+  }
+
+  .file-item:hover {
+    background: #f8fafc;
+  }
+
+  .file-item.on {
+    background: #f0f7ff;
+  }
+
+  .fi-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    transition: opacity .15s;
+  }
+
+  .fi-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .fi-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: #1f2937;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .fi-name.dim {
+    color: #9ca3af;
+  }
+
+  .fi-bar-bg {
+    width: 100%;
+    height: 4px;
+    background: #e5e7eb;
+    border-radius: 2px;
+    margin-top: 6px;
+  }
+
+  .fi-bar {
+    height: 4px;
+    border-radius: 2px;
+    transition: width .25s;
+  }
+
+  .fi-count {
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: color .15s;
+  }
+
+  .map-wrap {
+    position: relative;
+    min-height: 360px;
+    background: #f8fafc;
+    overflow: hidden;
+  }
+
+  .dist-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 16px;
+    background: #fff;
+    border: 0.5px solid var(--border, #e5e7eb);
+    border-radius: 8px;
+    margin-bottom: 24px;
+  }
+
+  .dist-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .dist-lbl {
+    font-size: 12px;
+    color: #4b5563;
+    width: 64px;
+    text-align: right;
+    flex-shrink: 0;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dist-track {
+    flex: 1;
+    display: flex;
+    height: 24px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #f3f4f6;
+  }
+
+  .dist-seg {
+    height: 100%;
+    transition: width .3s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .dist-cnt {
+    font-size: 11px;
+    font-weight: 500;
+    color: #6b7280;
+    white-space: nowrap;
+    width: 56px;
+    flex-shrink: 0;
+  }
+
+  .dist-pct {
+    font-size: 11px;
+    font-weight: 600;
+    color: #6b7280;
+    width: 44px;
+    flex-shrink: 0;
+    text-align: right;
+  }
+
+  .tab-bar {
+    display: flex;
+    border-bottom: 0.5px solid var(--border, #e5e7eb);
+    margin-bottom: 16px;
+  }
+
+  .tab {
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #6b7280;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all .12s;
+  }
+
+  .tab.on {
+    color: #4f46e5;
+    border-bottom-color: #4f46e5;
+    font-weight: 600;
+  }
+
+  .proto-udp {
+    background: #e0f2fe;
+    color: #0369a1;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+
+  .proto-tcp {
+    background: #dcfce7;
+    color: #15803d;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+
+  .role-pill {
+    background: #f3f4f6;
+    border: 0.5px solid #e5e7eb;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: #4b5563;
+    white-space: nowrap;
+  }
+
+  .role-cdn {
+    background: #eff6ff;
+    border: 0.5px solid #bfdbfe;
+    color: #1d4ed8;
+    font-weight: 500;
+  }
+
+  .fdot {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+
+  .party-filter-bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+
+  .party-filter-control {
+    font-size: 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 7px 9px;
+    background: #fff;
+    color: #374151;
+  }
+
+  .party-filter-search {
+    min-width: 240px;
+    flex: 1;
+  }
+
+  .ip-class-badge {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 3px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .ip-class-p2p {
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+  }
+
+  .ip-class-server {
+    background: #dbeafe;
+    color: #1d4ed8;
+  }
+
+  .ip-class-warning {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fde68a;
+  }
+
+  .ip-class-unclassified {
+    background: #e5e7eb;
+    color: #475569;
+  }
+
+  .ip-guide {
+    margin-bottom: 12px;
+    border: 1px solid #dbeafe;
+    border-radius: 8px;
+    background: #f8fbff;
+  }
+
+  .ip-guide summary {
+    cursor: pointer;
+    padding: 10px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #1d4ed8;
+  }
+
+  .ip-guide-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 8px;
+    padding: 0 12px 12px;
+  }
+
+  .ip-guide-item {
+    font-size: 11px;
+    color: #4b5563;
+    line-height: 1.4;
+  }
+
+  /* Activity Filter Strip */
+  .act-pill {
+    cursor: pointer;
+    user-select: none;
+  }
+</style>
+
+<!-- Top KPI Summary Cards -->
+<div class="kpi-row">
+  <div class="kpi">
+    <div class="kpi-l">Unique Parties</div>
+    <div class="kpi-v">{{ parties | length }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-l">Total Packets</div>
+    <div class="kpi-v">{{ parties | sum(attribute='packet_count') }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-l">Confirmed WA Entities</div>
+    <div class="kpi-v">{{ parties | selectattr('traffic_class','eq','confirmed_whatsapp') | list | length }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-l">Unclassified Endpoints</div>
+    <div class="kpi-v">{{ parties | selectattr('traffic_class','eq','unclassified') | list | length }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-l">Client → Server</div>
+    <div class="kpi-v">{{ parties | selectattr('party_type','eq','client_to_server') | list | length }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-l">Peer → Peer</div>
+    <div class="kpi-v">{{ parties | selectattr('is_p2p','eq',1) | list | length }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-l">Relay Servers</div>
+    <div class="kpi-v">{{ parties | selectattr('caveat_type','eq','relay_server') | list | length }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-l">Caveated Parties</div>
+    <div class="kpi-v {% if caveated_count > 0 %}warn{% endif %}">{{ caveated_count }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-l">Detected Calls</div>
+    <div class="kpi-v call-highlight" id="kpi-calls">0</div>
+  </div>
+</div>
+
+{% if caveated_count > 0 %}
+<div class="bg-orange-50 border-l-4 border-orange-500 text-orange-800 p-4 mb-6 rounded-md text-sm">
+  ⚠ <strong>{{ caveated_count }} parties</strong> have geographic uncertainty (VPN exit node or CGNAT). See caveat
+  column.
+</div>
+{% endif %}
+
+<!-- PHASE 4: Dedicated Call Geo-Map Section (Shown when calls exist) -->
+<div id="call-geomap-section" class="mb-6 bg-white border border-emerald-300 rounded-xl shadow-sm overflow-hidden" style="display:none;">
+  <div class="p-4 bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 border-b flex flex-col md:flex-row md:items-center justify-between gap-3">
+    <div>
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-emerald-600 text-white text-xs shadow-xs">
+          <i class="fa-solid fa-phone"></i>
+        </span>
+        <h2 class="text-base font-bold text-gray-900">Call Geo-Map &amp; Participant Analysis</h2>
+        <span id="call-pill-count" class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">0 Calls</span>
+      </div>
+      <p class="text-xs text-gray-600 mt-1">
+        Forensically identified voice and video calls. Distinguishes direct peer participants from infrastructure relays.
+      </p>
+    </div>
+    
+    <div class="flex items-center gap-2 flex-wrap">
+      <div class="inline-flex rounded-lg border border-gray-200 bg-white p-1 shadow-2xs text-xs font-medium text-gray-600" role="group">
+        <button type="button" id="call-filter-all" onclick="setCallFilter('all')" class="call-sub-pill px-3 py-1 rounded-md bg-emerald-600 text-white font-semibold transition-all shadow-xs">All Calls</button>
+        <button type="button" id="call-filter-p2p" onclick="setCallFilter('p2p')" class="call-sub-pill px-3 py-1 rounded-md text-gray-700 hover:text-gray-900 transition-all">🟢 P2P Direct Only</button>
+        <button type="button" id="call-filter-relay" onclick="setCallFilter('relay')" class="call-sub-pill px-3 py-1 rounded-md text-gray-700 hover:text-gray-900 transition-all">🔴 Relay Servers Only</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="p-4 bg-slate-50 border-b">
+    <div class="flex flex-wrap items-center justify-between text-xs text-gray-600 mb-2 gap-2">
+      <div class="flex items-center gap-4 flex-wrap">
+        <span class="inline-flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-emerald-600 inline-block shadow-2xs"></span><strong class="text-gray-800">P2P Direct Call</strong> (Human peer endpoint)</span>
+        <span class="inline-flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-red-600 inline-block shadow-2xs"></span><strong class="text-gray-800">TURN Relay Server</strong> (Meta infrastructure · not peer location)</span>
+      </div>
+      <span class="text-[11px] text-gray-500 italic">Arc color and stroke distinguish direct peer flows from relays</span>
+    </div>
+    <div id="callMapWrap" class="rounded-lg overflow-hidden border border-gray-200 bg-white shadow-xs">
+      {{ call_map_html | safe }}
+    </div>
+  </div>
+
+  <div class="p-4">
+    <div class="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2">Call Summary &amp; Endpoint Detail</div>
+    <div class="overflow-x-auto border border-gray-200 rounded-lg">
+      <table class="min-w-full divide-y divide-gray-200 text-xs">
+        <thead class="bg-gray-50 font-semibold text-gray-600">
+          <tr>
+            <th class="px-3 py-2 text-left">Duration</th>
+            <th class="px-3 py-2 text-left">Activity Type</th>
+            <th class="px-3 py-2 text-left">Remote Endpoint</th>
+            <th class="px-3 py-2 text-left">Location (City, State, Country)</th>
+            <th class="px-3 py-2 text-left">Connection Mode</th>
+            <th class="px-3 py-2 text-left">Confidence</th>
+            <th class="px-3 py-2 text-left">Packets / Bytes</th>
+            <th class="px-3 py-2 text-left">Forensic Caveat</th>
+          </tr>
+        </thead>
+        <tbody id="callSummaryBody" class="divide-y divide-gray-100 bg-white"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Geographic Traffic Flow (All files) -->
+<h2 class="text-lg font-semibold text-gray-800 mb-3">Geographic Traffic Flow</h2>
+<div class="split shadow-sm">
+  <div class="file-panel flex flex-col">
+    <div class="fp-head">
+      <span>Capture files</span>
+      <button onclick="allFiles()">Show All</button>
+    </div>
+    <div id="fileList" class="flex-1 overflow-y-auto max-h-[360px]"></div>
+  </div>
+  <div style="display:flex;flex-direction:column;" class="flex-1 min-w-0">
+    <div class="map-wrap bg-gray-50 border rounded-md overflow-hidden relative">
+      {{ map_html | safe }}
+    </div>
+  </div>
+</div>
+
+<div class="flex justify-between items-end mb-3">
+  <h2 class="text-lg font-semibold text-gray-800">Packet distribution by file</h2>
+  <div class="flex gap-4 text-xs font-medium">
+    <div class="flex items-center gap-2"><span
+        style="width:12px;height:12px;border-radius:3px;background:#10b981;display:inline-block;"></span><span
+        class="text-gray-600">WhatsApp traffic</span></div>
+    <div class="flex items-center gap-2"><span
+        style="width:12px;height:12px;border-radius:3px;background:#e5e7eb;display:inline-block;"></span><span
+        class="text-gray-600">Other / noise</span></div>
+  </div>
+</div>
+<div class="dist-wrap shadow-sm" id="distWrap"></div>
+
+<!-- PHASE 2: Activity-Type View Grouping Tab Strip -->
+<div class="bg-white border rounded-lg p-3 mb-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+  <div class="flex items-center gap-2 flex-wrap">
+    <span class="text-xs font-bold text-gray-500 uppercase tracking-wider mr-1">Filter Activity:</span>
+    <button type="button" id="act-btn-all" onclick="setActivityFilter('all')" class="act-pill px-3 py-1.5 rounded-lg text-xs font-bold transition-all bg-slate-800 text-white shadow-xs">
+      All Traffic <span id="act-count-all" class="ml-1 opacity-80">(0)</span>
+    </button>
+    <button type="button" id="act-btn-call" onclick="setActivityFilter('call')" class="act-pill px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 transition-all">
+      📞 Calls (P2P + Relay) <span id="act-count-call" class="ml-1 px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">0</span>
+    </button>
+    <button type="button" id="act-btn-chat" onclick="setActivityFilter('chat')" class="act-pill px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 transition-all">
+      💬 Chat &amp; Media <span id="act-count-chat" class="ml-1 px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-bold">0</span>
+    </button>
+    <button type="button" id="act-btn-infra" onclick="setActivityFilter('infra')" class="act-pill px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 transition-all">
+      🏗 Infrastructure <span id="act-count-infra" class="ml-1 px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold">0</span>
+    </button>
+  </div>
+  <div class="text-xs text-gray-500 flex items-center gap-2">
+    <span id="act-filter-desc" class="font-medium">Showing all network parties</span>
+    <button id="btn-reset-filters" type="button" onclick="resetAllFilters()" class="text-indigo-600 hover:text-indigo-800 text-xs font-medium underline hidden">Reset filters</button>
+  </div>
+</div>
+
+<div class="tab-bar">
+  <div class="tab on" id="tab-p" onclick="showTab('p')">Party Details (Aggregated)</div>
+  <div class="tab" id="tab-s" onclick="showTab('s')">Session Timeline</div>
+</div>
+
+<div class="party-filter-bar" aria-label="Party Details filters">
+  <input id="party-search" class="party-filter-control party-filter-search" type="search"
+    placeholder="Search IP, provider, activity, city, state, country, or file">
+  <select id="party-ip-class-filter" class="party-filter-control" aria-label="IP classification filter">
+    <option value="all">All IP Classes</option>
+    <option value="p2p">P2P</option>
+    <option value="server">Server</option>
+  </select>
+  <select id="party-confidence-filter" class="party-filter-control" aria-label="Confidence filter">
+    <option value="all">All Confidence</option>
+    <option value="high">High</option>
+    <option value="medium">Medium</option>
+    <option value="infrastructure">Infrastructure</option>
+    <option value="unclassified">Unclassified</option>
+  </select>
+  <button id="party-filter-reset" type="button" class="party-filter-control font-medium hover:bg-gray-50">Reset</button>
+  <span id="party-filter-count" class="text-xs text-gray-500"></span>
+</div>
+
+<div class="flex gap-4">
+  <details class="ip-guide flex-1">
+    <summary><i class="fa-solid fa-circle-info mr-1"></i> IP Classification Guide</summary>
+    <div class="ip-guide-grid">
+      <div class="ip-guide-item"><strong>P2P (Call)</strong> — likely direct call peer; strongest candidate for the
+        actual remote participant.</div>
+      <div class="ip-guide-item"><strong>Server (Chat)</strong> — WhatsApp messaging/chat infrastructure.</div>
+      <div class="ip-guide-item"><strong>Server (Media: Photo)</strong> — server interaction dominated by photo-transfer
+        traffic.</div>
+      <div class="ip-guide-item"><strong>Server (Media: Audio)</strong> — server interaction dominated by
+        voice-note/audio transfer traffic.</div>
+      <div class="ip-guide-item"><strong>Server (Media: Video)</strong> — server interaction dominated by video-transfer
+        traffic.</div>
+      <div class="ip-guide-item"><strong>Server (Media: Other)</strong> — confirmed media server with no reliable
+        photo/audio/video subtype.</div>
+      <div class="ip-guide-item"><strong>Server (Call Relay)</strong> — TURN/STUN/call relay; never the actual call
+        peer.</div>
+      <div class="ip-guide-item"><strong>Server (DNS)</strong> — DNS resolver.</div>
+      <div class="ip-guide-item"><strong>Server (CDN)</strong> — generic CDN/proxy edge.</div>
+      <div class="ip-guide-item"><strong>Server (Hosting)</strong> — cloud/hosting-provider endpoint.</div>
+      <div class="ip-guide-item"><strong>Server (VPN Exit)</strong> — VPN exit node; location may be unreliable.</div>
+      <div class="ip-guide-item"><strong>Server (CGNAT)</strong> — carrier-grade NAT gateway; not the actual device
+        location.</div>
+      <div class="ip-guide-item"><strong>Server (General)</strong> — identified server interaction without a more
+        precise purpose.</div>
+      <div class="ip-guide-item"><strong>Unclassified (Bypass)</strong> — bypass-retained traffic with no WA endpoint
+        conclusion.</div>
+    </div>
+  </details>
+  <details class="ip-guide flex-1">
+    <summary><i class="fa-solid fa-shield-halved mr-1"></i> Confidence Legend</summary>
+    <div class="ip-guide-grid" style="grid-template-columns: 1fr;">
+      <div class="ip-guide-item"><strong>High</strong> — Confirmed by payload structure and port heuristics. (Green
+        shield)</div>
+      <div class="ip-guide-item"><strong>Medium</strong> — Weak payload heuristic, but highly probable endpoint
+        behavior. (Yellow shield)</div>
+      <div class="ip-guide-item"><strong>Infrastructure</strong> — Meta-owned ASN/IP range associated with WhatsApp.
+        (Blue shield)</div>
+      <div class="ip-guide-item"><strong>Unclassified</strong> — Bypass traffic retained for manual review. (Gray badge)
+      </div>
+      <div class="ip-guide-item"><strong>None</strong> — No WhatsApp classification applied.</div>
+    </div>
+  </details>
+</div>
+
+<!-- Main Party Table -->
+<div id="pane-p" class="bg-white rounded-xl shadow-sm border overflow-x-auto mb-6">
+  <table class="min-w-full divide-y divide-gray-200">
+    <thead class="bg-gray-50">
+      <tr>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">Remote IP</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">Files</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">Proto</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">IP Classification</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">Packets</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">Bytes</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">Duration</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">Role / Mode</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">Activity</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">Confidence</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">
+          <i class="fa-solid fa-shield-halved mr-1 text-purple-500"></i>Crypto Info
+        </th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider">Location (City, State, Country)</th>
+        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 tracking-wider"></th>
+      </tr>
+    </thead>
+    <tbody class="bg-white divide-y divide-gray-200" id="partyBody"></tbody>
+  </table>
+</div>
+
+<div id="pane-s" class="bg-white rounded-xl shadow-sm border p-6 mb-6" style="display:none;">
+  <div class="text-sm text-gray-500 mb-4">Session duration per party. Bar width = relative duration. Filter by clicking
+    files above.</div>
+  <div id="timeline" class="space-y-3"></div>
+</div>
+
+<!-- Next step -->
+<div style="margin-top:16px; display:flex; justify-content:flex-end;">
+  <a class="inline-flex items-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md shadow-sm transition-colors"
+    href="{{ url_for('reports', capture_from=capture_from, capture_to=capture_to) }}">
+    Generate Report →
+  </a>
+</div>
+
+<script>
+  const FILES = {{ files_json | safe }};
+  const PARTIES = {{ parties_json | safe }};
+  const NODES = {{ nodes_json | safe }};
+  const ARCS = {{ arcs_json | safe }};
+
+  const maxTotal = Math.max(...FILES.map(f => f.total), 1);
+  let active = new Set(FILES.map((_, i) => i));
+  let partySearch = '';
+  let partyIpClassFilter = 'all';
+  let partyConfidenceFilter = 'all';
+  let activityFilter = 'all'; // 'all', 'call', 'chat', 'infra'
+  let callSubFilter = 'all';   // 'all', 'p2p', 'relay'
+
+  // Performance / windowed rendering for large cases (80L-packets)
+  const PAGE_SIZE = 100;
+  let partyOffset = 0;
+  let sentinelObserver = null;
+
+  // Canonical Activity Group definitions
+  const ACTIVITY_GROUPS = {
+    call: p => (
+      p.activityGroup === 'call' ||
+      p.isP2P === 1 ||
+      p.isRelay === 1 ||
+      (p.callDuration && p.callDuration > 0) ||
+      ['voice_call', 'video_call', 'call_stream_unresolved', 'call_signaling'].includes(p.activityRaw) ||
+      (p.activityRaw && p.activityRaw.includes('call')) ||
+      (p.role && p.role.includes('Peer'))
+    ),
+    chat: p => (
+      p.activityGroup === 'chat' ||
+      ['message', 'photo', 'audio', 'video', 'media_transfer', 'xmpp_multiplex'].includes(p.activityRaw) ||
+      (p.activityRaw && (p.activityRaw.includes('chat') || p.activityRaw.includes('media')))
+    ),
+    infra: p => (
+      p.activityGroup === 'infra' ||
+      (!ACTIVITY_GROUPS.call(p) && !ACTIVITY_GROUPS.chat(p))
+    ),
+  };
+
+  function fileActive(i) { return active.has(i); }
+
+  function renderFileList() {
+    const el = document.getElementById('fileList');
+    if (!el) return;
+    el.innerHTML = FILES.map((f, i) => `
+    <div class="file-item ${fileActive(i) ? 'on' : ''}" onclick="toggleFile(${i})">
+      <div class="fi-dot" style="background:${f.color};opacity:${fileActive(i) ? 1 : 0.25};"></div>
+      <div class="fi-body">
+        <div class="fi-name ${fileActive(i) ? '' : 'dim'}" title="${f.n}">${f.n}</div>
+        <div class="fi-bar-bg"><div class="fi-bar" style="width:${Math.round(f.total / maxTotal * 100)}%;background:${f.color};opacity:${fileActive(i) ? 0.9 : 0.2};"></div></div>
+      </div>
+      <div class="fi-count" style="color:${fileActive(i) ? f.color : 'var(--text-muted)'};">
+        ${f.total >= 1000 ? (f.total / 1000).toFixed(1) + 'k' : f.total}
+      </div>
+    </div>
+  `).join('');
+  }
+
+  function toggleFile(i) {
+    if (active.has(i)) { if (active.size === 1) return; active.delete(i); }
+    else active.add(i);
+    updateAll();
+  }
+  function allFiles() { FILES.forEach((_, i) => active.add(i)); updateAll(); }
+
+  function updateCallKpi() {
+    const callParties = PARTIES.filter(p => ACTIVITY_GROUPS.call(p));
+    const totalCallTime = callParties.reduce((s, p) => s + (p.callDuration || 0), 0);
+    const p2pCount = callParties.filter(p => p.isP2P === 1).length;
+    const relayCount = callParties.filter(p => p.isRelay === 1).length;
+    const el = document.getElementById('kpi-calls');
+    if (el) {
+      if (callParties.length > 0) {
+        const durStr = fmtDuration(totalCallTime);
+        el.textContent = `${callParties.length} (${durStr || (p2pCount + ' P2P')})`;
+      } else {
+        el.textContent = '0';
+      }
+    }
+  }
+
+  function updateActivityCounts() {
+    const visibleAll = PARTIES.filter(p => p.files.some(fi => active.has(fi)));
+    const callCount = visibleAll.filter(p => ACTIVITY_GROUPS.call(p)).length;
+    const chatCount = visibleAll.filter(p => ACTIVITY_GROUPS.chat(p)).length;
+    const infraCount = visibleAll.filter(p => ACTIVITY_GROUPS.infra(p)).length;
+
+    const cAll = document.getElementById('act-count-all');
+    if (cAll) cAll.textContent = `(${visibleAll.length})`;
+    const cCall = document.getElementById('act-count-call');
+    if (cCall) cCall.textContent = callCount;
+    const cChat = document.getElementById('act-count-chat');
+    if (cChat) cChat.textContent = chatCount;
+    const cInfra = document.getElementById('act-count-infra');
+    if (cInfra) cInfra.textContent = infraCount;
+  }
+
+  function setActivityFilter(group) {
+    activityFilter = group;
+    ['all', 'call', 'chat', 'infra'].forEach(g => {
+      const btn = document.getElementById(`act-btn-${g}`);
+      if (btn) {
+        if (g === group) {
+          let bgClass = 'bg-slate-800 text-white shadow-xs';
+          if (g === 'call') bgClass = 'bg-emerald-600 text-white shadow-xs';
+          else if (g === 'chat') bgClass = 'bg-indigo-600 text-white shadow-xs';
+          else if (g === 'infra') bgClass = 'bg-amber-600 text-white shadow-xs';
+          btn.className = `act-pill px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${bgClass}`;
+        } else {
+          btn.className = 'act-pill px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 transition-all';
+        }
+      }
+    });
+
+    const desc = document.getElementById('act-filter-desc');
+    if (desc) {
+      if (group === 'call') desc.textContent = 'Showing voice and video call parties (P2P direct + Turn relays)';
+      else if (group === 'chat') desc.textContent = 'Showing messaging, media exchange, and XMPP sessions';
+      else if (group === 'infra') desc.textContent = 'Showing infrastructure, relay, and CDN endpoints';
+      else desc.textContent = 'Showing all network parties';
+    }
+
+    const resetBtn = document.getElementById('btn-reset-filters');
+    if (resetBtn) {
+      resetBtn.classList.toggle('hidden', group === 'all' && partyIpClassFilter === 'all' && partyConfidenceFilter === 'all' && !partySearch);
+    }
+
+    partyOffset = 0;
+    renderParties();
+    drawMap();
+  }
+
+  function setCallFilter(sub) {
+    callSubFilter = sub;
+    ['all', 'p2p', 'relay'].forEach(s => {
+      const btn = document.getElementById(`call-filter-${s}`);
+      if (btn) {
+        if (s === sub) {
+          btn.className = 'call-sub-pill px-3 py-1 rounded-md bg-emerald-600 text-white font-semibold transition-all shadow-xs';
+        } else {
+          btn.className = 'call-sub-pill px-3 py-1 rounded-md text-gray-700 hover:text-gray-900 transition-all';
+        }
+      }
+    });
+    filterCallMap();
+    renderCallSummary();
+  }
+
+  function filterCallMap() {
+    const activeFileNames = new Set(Array.from(active).map(i => FILES[i].n));
+    document.querySelectorAll('#callMapSvg .map-flow-arc').forEach(arc => {
+      let files = [];
+      try { files = JSON.parse(arc.dataset.files || '[]'); } catch(e) {}
+      const fileMatch = files.length === 0 || files.some(f => activeFileNames.has(f));
+      const isRelay = arc.dataset.isRelay === '1';
+      let subMatch = true;
+      if (callSubFilter === 'p2p' && isRelay) subMatch = false;
+      if (callSubFilter === 'relay' && !isRelay) subMatch = false;
+
+      if (!fileMatch || !subMatch) {
+        arc.style.display = 'none';
+      } else {
+        arc.style.display = '';
+        arc.style.opacity = '0.85';
+        arc.style.strokeWidth = '2.4';
+      }
+    });
+
+    document.querySelectorAll('#callMapSvg .map-node-item').forEach(node => {
+      let files = [];
+      try { files = JSON.parse(node.dataset.files || '[]'); } catch(e) {}
+      const fileMatch = files.length === 0 || files.some(f => activeFileNames.has(f));
+      node.style.display = fileMatch ? '' : 'none';
+    });
+  }
+
+  function renderCallSummary() {
+    const tbody = document.getElementById('callSummaryBody');
+    if (!tbody) return;
+    const callParties = PARTIES.filter(p => p.files.some(fi => active.has(fi))).filter(p => ACTIVITY_GROUPS.call(p));
+
+    const p2pCount = callParties.filter(p => p.isP2P === 1).length;
+    const relayCount = callParties.filter(p => p.isRelay === 1).length;
+    const countBadge = document.getElementById('call-pill-count');
+    if (countBadge) {
+      countBadge.textContent = `${callParties.length} Calls (${p2pCount} P2P · ${relayCount} Relay)`;
+    }
+
+    const geomapSec = document.getElementById('call-geomap-section');
+    if (geomapSec) {
+      geomapSec.style.display = callParties.length > 0 ? 'block' : 'none';
+    }
+
+    const filtered = callParties.filter(p => {
+      if (callSubFilter === 'p2p') return p.isP2P === 1;
+      if (callSubFilter === 'relay') return p.isRelay === 1;
+      return true;
+    });
+
+    if (!filtered.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">No calls match the selected filter.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = filtered.map(p => {
+      const dur = fmtDuration(p.callDuration) || (p.dur ? fmtDuration(p.dur) : '—');
+      const isP2p = p.isP2P === 1;
+      const isRelay = p.isRelay === 1;
+      const modeBadge = isP2p
+        ? '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300"><i class="fa-solid fa-user-check text-[10px]"></i> P2P Direct Peer</span>'
+        : isRelay
+        ? '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-100 text-red-800 border border-red-300" title="TURN relay server"><i class="fa-solid fa-server text-[10px]"></i> TURN Relay</span>'
+        : '<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">Infrastructure</span>';
+
+      const caveatText = isRelay
+        ? '<span class="text-amber-800 font-medium text-[11px]"><i class="fa-solid fa-triangle-exclamation mr-1 text-amber-600"></i>Relay server location; does not reflect peer device position</span>'
+        : isP2p
+        ? '<span class="text-emerald-700 font-medium text-[11px]"><i class="fa-solid fa-circle-check mr-1 text-emerald-600"></i>Direct peer transport connection</span>'
+        : '<span class="text-gray-400 text-[11px]">—</span>';
+
+      const confColor = p.conf === 'High' ? 'text-green-700 font-bold' : p.conf === 'Medium' ? 'text-yellow-700 font-medium' : 'text-gray-500';
+      const locDisplay = p.displayLocation && p.displayLocation !== '—'
+        ? p.displayLocation
+        : `${p.city || ''}${p.city && p.country ? ', ' : ''}${p.country || 'Unknown'}`;
+
+      return `<tr class="hover:bg-emerald-50/50 transition-colors">
+        <td class="px-3 py-2.5 font-bold text-emerald-800 whitespace-nowrap">
+          <span class="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200">${dur}</span>
+          ${p.callWindows > 1 ? `<span class="text-[10px] text-gray-500 font-normal ml-1">(${p.callWindows} windows)</span>` : ''}
+        </td>
+        <td class="px-3 py-2.5 font-medium text-gray-800">${p.activity}</td>
+        <td class="px-3 py-2.5 font-mono text-gray-700 font-semibold">${p.endpointB || p.ip}</td>
+        <td class="px-3 py-2.5">
+          <div class="font-semibold text-gray-800">${p.city && p.city !== 'Unknown' && p.city !== '—' ? p.city : (p.country || '—')}</div>
+          <div class="text-[10px] text-gray-500">${locDisplay} · ${p.asn}</div>
+        </td>
+        <td class="px-3 py-2.5 whitespace-nowrap">${modeBadge}</td>
+        <td class="px-3 py-2.5 whitespace-nowrap ${confColor}">${p.conf}</td>
+        <td class="px-3 py-2.5 text-gray-600 whitespace-nowrap">${p.pkts.toLocaleString()} pkts <span class="text-gray-400">·</span> ${p.bytes}</td>
+        <td class="px-3 py-2.5">${caveatText}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function updateAll() {
+    renderFileList();
+    drawMap();
+    renderDist();
+    partyOffset = 0;
+    renderParties();
+    renderTimeline();
+    updateCallKpi();
+    updateActivityCounts();
+    renderCallSummary();
+  }
+
+  function handleDistClick(i) {
+    if (active.has(i) && active.size > 1) {
+      active.clear();
+      active.add(i);
+    } else {
+      if (active.has(i)) {
+        if (active.size > 1) active.delete(i);
+      } else {
+        active.add(i);
+      }
+    }
+    updateAll();
+  }
+
+  function renderDist() {
+    const el = document.getElementById('distWrap');
+    if (!el) return;
+    el.innerHTML = FILES.map((f, i) => {
+      const waW = Math.round(f.wa / maxTotal * 100);
+      const otherW = Math.round((f.total - f.wa) / maxTotal * 100);
+      const pct = f.total > 0 ? Math.round(f.wa / f.total * 100) : 0;
+      const dim = !fileActive(i);
+      return `<div class="dist-row" style="opacity:${dim ? 0.35 : 1}; cursor:pointer;" onclick="handleDistClick(${i})">
+      <div class="dist-lbl" title="${f.n}">${f.n}</div>
+      <div class="dist-track">
+        <div class="dist-seg" style="width:${waW}%;background:${dim ? '#9ca3af' : f.color};"></div>
+        <div class="dist-seg" style="width:${otherW}%;background:#e5e7eb;"></div>
+      </div>
+      <div class="dist-cnt">${f.total >= 1000 ? (f.total / 1000).toFixed(1) + 'k' : f.total} pkts</div>
+      <div class="dist-pct" style="color:${dim ? '#9ca3af' : f.color}; font-weight:600;">${pct}% WA · ${f.unclassified || 0} unclassified</div>
+    </div>`;
+    }).join('');
+  }
+
+  function ipClassBadge(p) {
+    const label = p.ipClassification || 'Server (General)';
+    let style = 'ip-class-server';
+    if (p.ipClassGroup === 'p2p') style = 'ip-class-p2p';
+    if (p.ipClassGroup === 'unclassified') style = 'ip-class-unclassified';
+    if (label === 'Server (Call Relay)' || label === 'Server (VPN Exit)' || label === 'Server (CGNAT)') style = 'ip-class-warning';
+    return `<span class="ip-class-badge ${style}" title="${p.ipClassificationDescription || label}">${label}</span>`;
+  }
+
+  function filteredParties() {
+    const query = partySearch.toLowerCase();
+    return PARTIES.filter(p => p.files.some(fi => active.has(fi))).filter(p => {
+      // Activity tab filter
+      if (activityFilter !== 'all' && !ACTIVITY_GROUPS[activityFilter](p)) return false;
+      // Secondary dropdown filters
+      if (partyIpClassFilter !== 'all' && p.ipClassGroup !== partyIpClassFilter) return false;
+      if (partyConfidenceFilter !== 'all' && (p.conf || '').toLowerCase() !== partyConfidenceFilter) return false;
+      if (!query) return true;
+      const fileNames = p.files.map(fi => (FILES[fi] || {}).n || '').join(' ');
+      const cryptoStr = p.crypto ? JSON.stringify(p.crypto) : '';
+      const searchable = [
+        p.ip, p.role, p.activity, p.country, p.city, p.subdivision,
+        p.displayLocation, p.asn, p.ipClassification, fileNames, cryptoStr
+      ].join(' ').toLowerCase();
+      return searchable.includes(query);
+    });
+  }
+
+  function loadMoreParties() {
+    partyOffset += PAGE_SIZE;
+    renderParties(true);
+  }
+
+  function loadAllParties() {
+    partyOffset = PARTIES.length;
+    renderParties(true);
+  }
+
+  function renderParties(isAppend = false) {
+    const visible = filteredParties();
+    const count = document.getElementById('party-filter-count');
+    if (count) count.textContent = `${visible.length} of ${PARTIES.length} parties`;
+
+    const tbody = document.getElementById('partyBody');
+    if (!tbody) return;
+
+    if (!visible.length) {
+      tbody.innerHTML = '<tr><td colspan="13" class="px-4 py-10 text-center text-sm text-gray-400">No parties match the current filters.</td></tr>';
+      return;
+    }
+
+    const pageRows = visible.slice(0, partyOffset + PAGE_SIZE);
+
+    const rowsHtml = pageRows.map(p => {
+      const tags = p.files.filter(fi => active.has(fi)).map(fi => `<div class="fdot shadow-xs" style="background:${FILES[fi].color};" title="${FILES[fi].n}"></div>`).join('');
+      const confColor = p.conf === 'High' ? 'text-green-600' : p.conf === 'Medium' ? 'text-yellow-600' : p.conf === 'Unclassified' ? 'text-slate-600' : 'text-gray-400';
+      const roleClass = p.role.includes('CDN') ? 'role-pill role-cdn' : 'role-pill';
+      const caveatIcon = p.caveat ? `<i class="fa-solid fa-triangle-exclamation text-orange-500" title="${p.caveat_type || 'Geographic uncertainty'}"></i>` : '';
+      const cBadge = cryptoBadge(p);
+
+      const isCall = ACTIVITY_GROUPS.call(p);
+      let callBadge = '';
+      if (p.callDuration > 0 || isCall) {
+        const dur = fmtDuration(p.callDuration) || (p.dur ? fmtDuration(p.dur) : 'Call');
+        const multi = p.callWindows > 1 ? ` · ${p.callWindows} calls` : '';
+        callBadge = `
+          <div class="mt-1">
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full 
+                         bg-emerald-50 border border-emerald-300 text-emerald-800 
+                         text-[11px] font-bold whitespace-nowrap shadow-2xs">
+              <i class="fa-solid fa-phone text-emerald-600 text-[9px]"></i>
+              ${dur}${multi}
+            </span>
+          </div>`;
+      }
+
+      let roleCell = `<span class="${roleClass}">${p.role}</span>`;
+      if (p.isP2P === 1) {
+        roleCell = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs"><i class="fa-solid fa-user-check text-[9px]"></i> P2P Direct</span>`;
+      } else if (p.isRelay === 1) {
+        roleCell = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-red-100 text-red-800 border border-red-300 shadow-2xs" title="TURN relay server; not peer location"><i class="fa-solid fa-server text-[9px]"></i> TURN Relay</span>`;
+      }
+
+      // PHASE 1 & 2: Two-line Location Cell
+      const locationDisplay = `
+        <div class="font-semibold text-gray-800 text-xs leading-tight" title="${p.displayLocation || (p.city + ', ' + p.country)}">
+          ${p.city && p.city !== 'Unknown' && p.city !== '—' ? p.city : (p.country || '—')}
+        </div>
+        <div class="text-gray-400 text-[10px] leading-tight mt-0.5 truncate max-w-[150px]" title="${p.subdivision ? p.subdivision + ', ' : ''}${p.country} · ${p.asn}">
+          ${p.subdivision ? p.subdivision + ', ' : ''}${p.country} · ${(p.asn || '').split(' ')[0]}
+        </div>`;
+
+      return `<tr class="hover:bg-gray-50 cursor-pointer ${p.caveat ? 'bg-orange-50/40' : ''} ${isCall ? 'bg-emerald-50/20' : ''}">
+        <td class="px-4 py-3 text-sm font-semibold text-gray-800 align-top">${p.ip}</td>
+        <td class="px-4 py-3 align-top"><div class="flex gap-1 flex-wrap w-16">${tags}</div></td>
+        <td class="px-4 py-3 align-top"><span class="${p.proto === 'UDP' ? 'proto-udp' : 'proto-tcp'}">${p.proto}</span></td>
+        <td class="px-4 py-3 align-top">${ipClassBadge(p)}</td>
+        <td class="px-4 py-3 text-xs font-bold text-gray-700 align-top">${p.pkts.toLocaleString()}</td>
+        <td class="px-4 py-3 text-xs text-gray-600 align-top">${p.bytes}</td>
+        <td class="px-4 py-3 text-xs text-gray-600 align-top">${p.dur >= 3600 ? Math.round(p.dur / 3600) + 'h' : Math.round(p.dur) + 's'}</td>
+        <td class="px-4 py-3 align-top">${roleCell}</td>
+        <td class="px-4 py-3 text-xs text-gray-500 font-mono align-top">
+          <div>${p.activity}</div>
+          ${callBadge}
+        </td>
+        <td class="px-4 py-3 text-xs font-semibold ${confColor} align-top">${p.conf === 'Unclassified' ? 'UNCLASSIFIED' : p.conf}</td>
+        <td class="px-4 py-3 align-top">${cBadge}</td>
+        <td class="px-4 py-3 align-top whitespace-nowrap">${locationDisplay}</td>
+        <td class="px-4 py-3 text-center align-top">${caveatIcon}</td>
+      </tr>`;
+    }).join('');
+
+    let sentinelHtml = '';
+    if (visible.length > pageRows.length) {
+      sentinelHtml = `
+        <tr id="party-scroll-sentinel">
+          <td colspan="13" class="px-4 py-3 bg-gray-50 text-center text-xs text-gray-600">
+            <div class="flex items-center justify-center gap-3">
+              <span>Showing <strong>${pageRows.length}</strong> of <strong>${visible.length}</strong> parties</span>
+              <button type="button" onclick="loadMoreParties()" class="px-3 py-1 bg-indigo-600 text-white rounded-md font-semibold text-xs hover:bg-indigo-700 transition-colors shadow-xs">Load More (100)</button>
+              <button type="button" onclick="loadAllParties()" class="px-3 py-1 bg-white border border-gray-300 text-gray-700 rounded-md font-medium text-xs hover:bg-gray-50 transition-colors">Show All (${visible.length})</button>
+            </div>
+          </td>
+        </tr>`;
+    }
+
+    tbody.innerHTML = rowsHtml + sentinelHtml;
+
+    // Automatic intersection observer for continuous smooth scrolling
+    if (sentinelObserver) sentinelObserver.disconnect();
+    const sentinelEl = document.getElementById('party-scroll-sentinel');
+    if (sentinelEl) {
+      sentinelObserver = new IntersectionObserver(entries => {
+        if (entries[0].isIntersecting) {
+          loadMoreParties();
+        }
+      }, { rootMargin: '200px' });
+      sentinelObserver.observe(sentinelEl);
+    }
+  }
+
+  function renderTimeline() {
+    const visible = PARTIES.filter(p => p.files.some(fi => active.has(fi)));
+    const maxDur = Math.max(...visible.map(p => p.dur), 1);
+    const timelineEl = document.getElementById('timeline');
+    if (!timelineEl) return;
+    timelineEl.innerHTML = visible.map(p => {
+      const fi = p.files.find(fi => active.has(fi));
+      const c = fi !== undefined ? FILES[fi].color : '#888';
+      const w = Math.round(p.dur / maxDur * 100);
+      return `<div class="flex items-center gap-3">
+      <div class="text-xs font-mono text-gray-600 w-32 text-right truncate" title="${p.ip}">${p.ip}</div>
+      <div class="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+        <div class="h-full rounded-full transition-all" style="width:${w}%;background:${c};"></div>
+      </div>
+      <div class="text-xs text-gray-500 w-12 text-right">${p.dur >= 3600 ? Math.round(p.dur / 3600) + 'h' : Math.round(p.dur) + 's'}</div>
+    </div>`;
+    }).join('');
+  }
+
+  function fmtDuration(secs) {
+    if (!secs || secs < 1) return null;
+    if (secs < 60) return `${Math.round(secs)}s`;
+    if (secs < 3600) {
+      const m = Math.floor(secs / 60), s = Math.round(secs % 60);
+      return `${m}m ${s.toString().padStart(2,'0')}s`;
+    }
+    const h = Math.floor(secs / 3600), m = Math.round((secs % 3600) / 60);
+    return `${h}h ${m.toString().padStart(2,'0')}m`;
+  }
+
+  function showTab(t) {
+    document.getElementById('tab-p').className = 'tab' + (t === 'p' ? ' on' : '');
+    document.getElementById('tab-s').className = 'tab' + (t === 's' ? ' on' : '');
+    document.getElementById('pane-p').style.display = t === 'p' ? 'block' : 'none';
+    document.getElementById('pane-s').style.display = t === 's' ? 'block' : 'none';
+  }
+
+  function cryptoBadge(p) {
+    const c = p.crypto;
+    if (!c) return '<span class="text-gray-300 text-xs">—</span>';
+
+    const transport = c.transport || 'TLS';
+    const pqc = c.pqc_detected;
+
+    const tBadge = transport === 'QUIC'
+      ? '<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700">QUIC</span>'
+      : '<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-100 text-green-700">TLS</span>';
+
+    const pqcBadge = pqc
+      ? '<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700 ml-1">⚛ PQC</span>'
+      : '';
+
+    let versionLine = '';
+    if (c.tls && c.tls.version) {
+      versionLine = `<div class="text-[10px] text-gray-500 leading-tight">TLS ${c.tls.version}</div>`;
+    } else if (c.quic_version) {
+      versionLine = `<div class="text-[10px] text-gray-500 leading-tight">QUIC v${c.quic_version}</div>`;
+    }
+
+    let groupLine = '';
+    if (c.tls && c.tls.groups && c.tls.groups.length) {
+      groupLine = `<div class="text-[10px] font-mono text-gray-500 truncate max-w-[140px] leading-tight" title="${c.tls.groups.join(', ')}">${c.tls.groups.slice(0,2).join(', ')}</div>`;
+    }
+
+    let cipherLine = '';
+    if (c.tls && c.tls.cipher) {
+      cipherLine = `<div class="text-[10px] font-mono text-gray-400 truncate max-w-[140px] leading-tight" title="${c.tls.cipher}">${c.tls.cipher}</div>`;
+    }
+
+    return `<div class="flex flex-col gap-0.5">
+      <div class="flex items-center mb-0.5">${tBadge}${pqcBadge}</div>
+      ${versionLine}${groupLine}${cipherLine}
+    </div>`;
+  }
+
+  // PHASE 2.3 & 3: Activity-Aware Map SVG Filtering
+  function drawMap() {
+    const activeFileNames = new Set(Array.from(active).map(i => FILES[i].n));
+
+    document.querySelectorAll('#coreMap .map-flow-arc').forEach(arc => {
+      let files = [];
+      try { files = JSON.parse(arc.dataset.files || '[]'); } catch(e) {}
+      const fileMatch = files.length === 0 || files.some(f => activeFileNames.has(f));
+      const group = arc.dataset.activityGroup || 'infra';
+      const actMatch = (activityFilter === 'all' || activityFilter === group);
+
+      if (!fileMatch) {
+        arc.style.display = 'none';
+      } else {
+        arc.style.display = '';
+        if (actMatch) {
+          arc.style.opacity = (activityFilter === 'call' && group === 'call') ? '0.95' : '0.7';
+          arc.style.strokeWidth = (activityFilter === 'call' && group === 'call') ? '3' : '1.8';
+        } else {
+          arc.style.opacity = '0.08';
+          arc.style.strokeWidth = '1';
+        }
+      }
+    });
+
+    document.querySelectorAll('#coreMap .map-node-item').forEach(node => {
+      let files = [];
+      try { files = JSON.parse(node.dataset.files || '[]'); } catch(e) {}
+      const fileMatch = files.length === 0 || files.some(f => activeFileNames.has(f));
+      const group = node.dataset.activityGroup || 'infra';
+      const actMatch = (activityFilter === 'all' || activityFilter === group);
+      node.style.display = fileMatch ? '' : 'none';
+      node.style.opacity = (!fileMatch || (!actMatch && activityFilter !== 'all')) ? '0.15' : '1';
+    });
+
+    filterCallMap();
+  }
+
+  // Export for any global callers
+  window.filterCoreMap = drawMap;
+
+  function resetAllFilters() {
+    partySearch = '';
+    partyIpClassFilter = 'all';
+    partyConfidenceFilter = 'all';
+    const sInput = document.getElementById('party-search');
+    const cSelect = document.getElementById('party-ip-class-filter');
+    const confSelect = document.getElementById('party-confidence-filter');
+    if (sInput) sInput.value = '';
+    if (cSelect) cSelect.value = 'all';
+    if (confSelect) confSelect.value = 'all';
+    setActivityFilter('all');
+  }
+
+  function bindPartyFilters() {
+    const search = document.getElementById('party-search');
+    const ipClass = document.getElementById('party-ip-class-filter');
+    const confidence = document.getElementById('party-confidence-filter');
+    const reset = document.getElementById('party-filter-reset');
+
+    if (search) search.addEventListener('input', event => { partySearch = event.target.value.trim(); partyOffset = 0; renderParties(); });
+    if (ipClass) ipClass.addEventListener('change', event => { partyIpClassFilter = event.target.value; partyOffset = 0; renderParties(); });
+    if (confidence) confidence.addEventListener('change', event => { partyConfidenceFilter = event.target.value; partyOffset = 0; renderParties(); });
+    if (reset) reset.addEventListener('click', resetAllFilters);
+  }
+
+  bindPartyFilters();
+  updateAll();
+</script>
+
+{% else %}
+<div class="bg-blue-100 border-l-4 border-blue-500 text-blue-800 p-4 rounded-md flex items-center space-x-2">
+  ℹ No analysis data yet. Click <strong>Run Analysis on Case</strong> above to group parties and geolocate.
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

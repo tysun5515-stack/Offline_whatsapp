@@ -2,7 +2,6 @@
 packet_parser.py: Parses raw network frames into packet metadata records.
 """
 
-import json
 import struct
 import socket
 from typing import Optional, Dict, Any, Tuple, List
@@ -238,7 +237,7 @@ def get_ip_header_offset(link_type: int, raw_frame: bytes) -> Tuple[Optional[int
                 
         return offset, ethertype
         
-    # Bug 12 fix: Add LINKTYPE_NULL (0) and LINKTYPE_LOOP (108) used by local loopback
+    # BSD loopback captures use LINKTYPE_NULL (0) or LINKTYPE_LOOP (108).
     elif link_type in (0, 108):
         if len(raw_frame) < 4:
             return None, None
@@ -549,7 +548,7 @@ def parse_packet(packet_no: int, timestamp: float, link_type: int, raw_frame: by
             except struct.error:
                 pass
                 
-        # Bug 12 fix: STUN Method 2 (WhatsApp 86-byte binding requests)
+        # Preserve the alternate STUN binding-request encoding seen in captures.
         # Moved out of the `elif` that was attached to `if len >= 20` because 
         # an 86-byte raw frame implies 44 bytes UDP payload, so it always hit
         # the first branch and never the elif.

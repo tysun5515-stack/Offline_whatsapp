@@ -12,21 +12,19 @@ sys.path.append(BASE_DIR)
 
 from src.webapp.db_registry import (
     init_registry_db, register_upload, get_upload, list_uploads, update_status, get_batch, list_batches,
-    update_filtered_evidence, remove_filtered_evidence, clear_existing_evidence_once,
-    get_evidence_scope, latest_capture_end, flatten_evidence_storage_once, list_raw_evidence, list_filtered_evidence, delete_evidence_copy, set_filter_state
+    get_evidence_scope, latest_capture_end, flatten_evidence_storage_once, list_raw_evidence,
+    list_filtered_evidence, delete_evidence_copy
 )
 from src.webapp.db_analysis import (
     init_analysis_db,
-    get_packets, get_parties, get_parties_scope, get_geo, upsert_geo, get_sessions, get_sessions_scope,
-    upsert_batch_metrics, get_batch_metrics, clear_batch_packets,
-    get_file_list, get_packets_paged, get_packet_detail, clear_upload_packets
+    get_packets, get_parties_scope, get_geo, upsert_geo, get_sessions, get_sessions_scope,
+    get_batch_metrics,
+    get_file_list, get_packets_paged, get_packet_detail, clear_upload_packets,
+    get_file_packet_metrics, get_crypto_flows_by_upload_ids
 )
 from src.webapp.forensic_evidence import build_evidence_trail
-from src.pipeline import process_pcap_to_whatsapp_packets
-from src.capture_evidence import capture_metadata, write_filtered_capture
-from src.geolocation import geolocate, reverse_dns
+from src.capture_evidence import capture_metadata
 from src.geo_plot import generate_map_html
-from src.geo_mapping import classify_remote_party
 from src.geo_enrichment import enrich_parties
 
 # India has no daylight-saving transitions, so a fixed offset avoids requiring
@@ -101,15 +99,41 @@ def classify_ip_presentation(party):
     return 'Server (General)', 'server', 'Identified server interaction without a more precise purpose.'
 
 
+def get_party_activity_group(party: dict) -> str:
+    """Classify party into call, chat, or infra for visualization and tab filtering."""
+    act = (party.get('sub_activity') or '').lower()
+    caveat = (party.get('caveat_type') or '').lower()
+    role = (party.get('role_label') or '').lower()
+    ip_class = (party.get('ip_classification') or '').lower()
+    if (
+        act in ('voice_call', 'video_call', 'call_stream_unresolved', 'call_signaling')
+        or party.get('is_p2p') == 1
+        or caveat == 'relay_server'
+        or 'call' in act
+        or 'call' in ip_class
+        or 'peer' in role
+        or (party.get('call_duration_s') or 0) > 0
+    ):
+        return 'call'
+    if (
+        act in ('message', 'photo', 'audio', 'video', 'media_transfer', 'xmpp_multiplex')
+        or 'chat' in act
+        or 'media' in act
+        or 'chat' in role
+    ):
+        return 'chat'
+    return 'infra'
+
+
 # ---------------------------------------------------------------------------
-# UI label map (Fix G/H/interface3.html requirement)
+# Stable display labels used by the analysis UI.
 # Maps internal pipeline labels → analyst-facing display strings.
 # call_stream_unresolved: kept as a valid forensic state per strategic
 #   alignment; displayed with an 'Encrypted Call (Unanchored)' badge so
 #   analysts know call-like traffic was observed but cannot be
 #   cryptographically confirmed without a STUN cookie anchor.
-# media_transfer: unified label for mmi*/mms* CDN flows (Fix C).
-# xmpp_multiplex: FunXMPP TCP 5222 carries chat + call setup (Fix F).
+# media_transfer is the unified label for ambiguous media-CDN flows.
+# xmpp_multiplex reflects that FunXMPP carries chat and call setup.
 # ---------------------------------------------------------------------------
 _MEDIA_LABEL_MAP: dict = {
     'voice_call'            : 'Voice Call',
@@ -532,18 +556,18 @@ def create_app():
                                range_error=range_error, scope_evidence=uploads,
                                default_scope=default_scope)
     
-    @app.route('/interface/1')
-    def interface1():
+    @app.route('/uploads')
+    def uploads():
         uploads = list_uploads()
         error = request.args.get('error')
-        return render_template('interface1.html', 
-                               active_interface=1, 
+        return render_template('uploads.html',
+                               active_interface=1,
                                uploads=uploads,
                                error=error,
                                large_batch_upload_enabled=app.config['LARGE_BATCH_UPLOAD_ENABLED'])
 
-    @app.route('/interface/2')
-    def interface2():
+    @app.route('/filtering')
+    def filtering():
         # Filter Traffic operates on RAW evidence; packet results are indexed
         # only after a validated Filtered_PCAP derivative has been created.
         start_ts, end_ts, range_error, uploads, default_scope = _scope()
@@ -558,16 +582,16 @@ def create_app():
         filter_stats = ({'packet_count': total_pkts, 'flow_count': len(file_list),
                          'whatsapp_count': total_pkts, 'detected_os': 'unknown',
                          'bypass_mode': False} if total_pkts else None)
-        return render_template('interface2.html', active_interface=2, uploads=uploads,
+        return render_template('filtering.html', active_interface=2, uploads=uploads,
                                filtered_uploads=filtered_uploads, filter_stats=filter_stats,
                                source_packet_count=source_packet_count, file_list=file_list, range_error=range_error,
                                scope_evidence=uploads, default_scope=default_scope)
-    @app.route('/interface/3')
-    def interface3():
+    @app.route('/analysis')
+    def analysis():
         batch_id = None
         start_ts, end_ts, range_error, uploads, default_scope = _filtered_scope()
         if range_error:
-            return render_template('interface3.html', active_interface=3, uploads=uploads, parties=[], error=range_error), 400
+            return render_template('analysis.html', active_interface=3, uploads=uploads, parties=[], error=range_error), 400
         batch_metrics = None
         bypass_mode = bool(batch_metrics and batch_metrics.get('bypass_mode'))
         
@@ -578,11 +602,17 @@ def create_app():
         arcs_json = "[]"
         caveated_count = 0
         map_html = ""
+        call_map_html = ""
+        call_parties_count = 0
         
         if uploads and any(u['status'] in ('filtered', 'analyzed') for u in uploads):
             upload_ids = [u['upload_id'] for u in uploads]
             packets = get_packets(None, start_ts, end_ts, upload_ids=upload_ids)
-            parties_data = get_parties_scope(upload_ids, start_ts, end_ts)
+            activity_filter = request.args.get('activity')
+            limit_param = request.args.get('limit', type=int)
+            parties_data = get_parties_scope(upload_ids, start_ts, end_ts,
+                                             activity_group=activity_filter,
+                                             limit=limit_param)
             parties_data = enrich_parties(parties_data, get_geo, upsert_geo)
             for p in parties_data:
                 p['ip_classification'], p['ip_class_group'], p['ip_classification_description'] = classify_ip_presentation(p)
@@ -602,20 +632,7 @@ def create_app():
             
             import json
             import math
-            from src.webapp.db_analysis import _connect
-            conn = _connect()
-            time_clause, time_params = '', []
-            if start_ts is not None:
-                time_clause += ' AND timestamp >= ?'; time_params.append(start_ts)
-            if end_ts is not None:
-                time_clause += ' AND timestamp < ?'; time_params.append(end_ts)
-            file_metrics_raw = conn.execute("""
-                SELECT filename, COUNT(*) AS total,
-                       SUM(CASE WHEN lower(whatsapp_confidence) IN ('high', 'medium', 'infrastructure') THEN 1 ELSE 0 END) AS wa,
-                       SUM(CASE WHEN lower(whatsapp_confidence) = 'unclassified' THEN 1 ELSE 0 END) AS unclassified
-                FROM whatsapp_packets WHERE 1 = 1 {time_clause} GROUP BY filename
-            """.format(time_clause=time_clause), time_params).fetchall()
-            conn.close()
+            file_metrics_raw = get_file_packet_metrics(start_ts=start_ts, end_ts=end_ts)
             
             def generate_palette(n):
                 golden_angle = 137.508
@@ -699,6 +716,10 @@ def create_app():
                 pkts = p.get('packet_count', 0)
                 asn = p.get('asn_org') or 'Unknown'
                 country = p.get('geo_country') or 'Unknown'
+                group = get_party_activity_group(p)
+                p['activity_group'] = group
+                is_relay = 1 if (p.get('caveat_type') == 'relay_server' or 'relay' in (p.get('ip_classification') or '').lower()) else 0
+                is_p2p = 1 if (p.get('is_p2p') == 1 or p.get('ip_class_group') == 'p2p') else 0
                 node_a = endpoint_node(p, 'a', color, file_indices)
                 node_b = endpoint_node(p, 'b', color, file_indices)
                 arcs_list.append({
@@ -707,7 +728,9 @@ def create_app():
                     'files': file_indices,
                     'proto': p.get('protocol', 'UDP'),
                     'aToBBytes': p.get('a_to_b_bytes', 0),
-                    'bToABytes': p.get('b_to_a_bytes', 0)
+                    'bToABytes': p.get('b_to_a_bytes', 0),
+                    'activityGroup': group,
+                    'isRelay': is_relay
                 })
 
                 parties_json_list.append({
@@ -728,9 +751,15 @@ def create_app():
                     'ipClassGroup': p.get('ip_class_group', 'server'),
                     'ipClassificationDescription': p.get('ip_classification_description', ''),
                     'country': country,
-                    'city': p.get('geo_city', '—'),
+                    'city': p.get('geo_city') or p.get('geo_subdivision') or '—',
+                    'subdivision': p.get('geo_subdivision', ''),
+                    'displayLocation': p.get('display_location', '—'),
+                    'activityGroup': group,
+                    'isRelay': is_relay,
+                    'isP2P': is_p2p,
                     'asn': asn,
                     'caveat': not p.get('location_reliable', True),
+                    'caveat_type': p.get('caveat_type', ''),
                     'crypto': p.get('crypto_summary'),
                     'callDuration': p.get('call_duration_s', 0),
                     'longestCall': p.get('longest_call_s', 0),
@@ -751,29 +780,41 @@ def create_app():
                 per_file_source_positions=per_file_source_positions,
                 per_file_source_ips=_file_client_ip
             )
+            call_parties = [p for p in parties_data if get_party_activity_group(p) == 'call']
+            call_parties_count = len(call_parties)
+            if call_parties:
+                call_map_html = generate_map_html(
+                    call_parties,
+                    height=280,
+                    file_color_map=file_color_map,
+                    div_id='callMapSvg',
+                    show_legend=False
+                )
             
         all_batches = list_batches()
             
-        return render_template('interface3.html',
+        return render_template('analysis.html',
                                active_interface=3,
                                uploads=uploads,
+                               all_batches=all_batches,
                                parties=parties_data,
                                files_json=files_json,
                                parties_json=parties_json,
                                nodes_json=nodes_json,
                                arcs_json=arcs_json,
                                map_html=map_html,
+                               call_map_html=call_map_html,
+                               call_parties_count=call_parties_count,
                                caveated_count=caveated_count,
                                bypass_mode=bypass_mode, scope_evidence=uploads, default_scope=default_scope)
 
-    @app.route('/interface/5')
-    @app.route('/interface/report-generation')
-    def interface5():
+    @app.route('/reports')
+    def reports():
         """Generate an offline report from the current filtered-evidence scope."""
         start_ts, end_ts, range_error, uploads, default_scope = _filtered_scope()
         upload_ids = [upload['upload_id'] for upload in uploads]
         files = get_file_list(None, start_ts, end_ts, upload_ids=upload_ids) if upload_ids else []
-        return render_template('interface5.html', active_interface=5, uploads=uploads,
+        return render_template('reports.html', active_interface=5, uploads=uploads,
                                files=files, range_error=range_error, scope_evidence=uploads,
                                default_scope=default_scope, capture_start_ts=start_ts,
                                capture_end_ts=end_ts,
@@ -789,10 +830,10 @@ def create_app():
     @app.route('/api/register', methods=['POST'])
     def api_register():
         if 'pcap_file' not in request.files:
-            return redirect(url_for('interface1', error='No file part'))
+            return redirect(url_for('uploads', error='No file part'))
         file = request.files['pcap_file']
         if file.filename == '':
-            return redirect(url_for('interface1', error='No selected file'))
+            return redirect(url_for('uploads', error='No selected file'))
             
         import uuid
         upload_id = str(uuid.uuid4())
@@ -809,9 +850,9 @@ def create_app():
             receipt = register_upload(filename, filepath, file_format=file_format, capture_metadata=metadata, upload_id=upload_id, batch_id=batch_id)
         except Exception as exc:
             if os.path.exists(filepath): os.remove(filepath)
-            return redirect(url_for('interface1', error=f'Invalid capture: {exc}'))
+            return redirect(url_for('uploads', error=f'Invalid capture: {exc}'))
         
-        return redirect(url_for('interface1'))
+        return redirect(url_for('uploads'))
 
     @app.route('/api/register/batch', methods=['POST'])
     def api_register_batch():
@@ -942,12 +983,11 @@ def create_app():
                             'parties': sum(item['counts']['parties'] for item in results),
                             'sessions': sum(item['counts']['sessions'] for item in results)})
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            app.logger.exception("Analysis failed")
             return jsonify({'error': str(e)}), 500
 
-    @app.route('/api/crypto/flows', defaults={'batch_id': None})
-    def api_crypto_flows(batch_id):
+    @app.route('/api/crypto/flows', methods=['GET'])
+    def api_crypto_flows():
         start, end, error, uploads, default = _filtered_scope()
         if error:
             return jsonify(error=error), 400
@@ -955,15 +995,7 @@ def create_app():
         if not upload_ids:
             return jsonify(status='success', flows=[], summary={})
         
-        from src.webapp.db_analysis import get_crypto_flows, get_crypto_summary, _connect
-        import json
-        conn = _connect()
-        marks = ','.join('?' for _ in upload_ids)
-        flows = [dict(r) for r in conn.execute(
-            f'SELECT * FROM crypto_flows WHERE upload_id IN ({marks}) ORDER BY first_seen',
-            upload_ids
-        )]
-        conn.close()
+        flows = get_crypto_flows_by_upload_ids(upload_ids)
         
         # summary
         summary = dict(total_flows=len(flows), analyzed_flows=len(flows),
@@ -1041,7 +1073,6 @@ def create_app():
     def api_reset_all():
         """Wipe ALL pcap uploads, analysis data and uploaded files from disk.
         Preserves geo_cache (IP lookup data) and DB schemas.
-        Use before submitting the codebase so no personal capture data is included.
         """
         from src.webapp.db_registry import list_uploads, delete_upload
         from src.webapp.db_analysis import _connect as _analysis_connect
@@ -1175,7 +1206,7 @@ def create_app():
         from src.session_comparator import compare_uploads
         from src.geo_plot import generate_map_html
         try:
-            # We would need to update compare_uploads to handle batch_id if we want this to work.
+            # Preserve the legacy batch-identifier comparison contract.
             result = compare_uploads(batch_id_a, batch_id_b)
             return jsonify(result)
         except Exception as e:
@@ -1193,7 +1224,7 @@ def create_app():
         with os.fdopen(fd, 'w') as f:
             json.dump(sessions, f, indent=2)
             
-        # Bug 3 fix: The route was missing a return statement, crashing with a Flask 500 error
+        # Return the exported analysis as an attachment.
         return send_file(path, as_attachment=True, download_name=f"whatsapp_case_{batch_id[:8]}_export.json")
             
     # ── Forensic Packet Browser API Endpoints ──────────────────────
@@ -1278,8 +1309,25 @@ def create_app():
             'summary_narrative': trail['summary_narrative']
         })
 
+    @app.route('/interface/1')
+    def legacy_uploads():
+        return redirect(url_for('uploads', **request.args.to_dict(flat=False)))
+
+    @app.route('/interface/2')
+    def legacy_filtering():
+        return redirect(url_for('filtering', **request.args.to_dict(flat=False)))
+
+    @app.route('/interface/3')
+    def legacy_analysis():
+        return redirect(url_for('analysis', **request.args.to_dict(flat=False)))
+
+    @app.route('/interface/5')
+    @app.route('/interface/report-generation')
+    def legacy_reports():
+        return redirect(url_for('reports', **request.args.to_dict(flat=False)))
+
     return app
 
 if __name__ == '__main__':
     app = create_app()
-    app.run(debug=True, port=5000)
+    app.run(host='127.0.0.1', port=5000, debug=False)

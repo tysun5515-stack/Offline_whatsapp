@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any
 from src.webapp.db_analysis import get_parties, get_sessions, _connect
 
 def compare_uploads(upload_id_a: str, upload_id_b: str) -> Dict[str, Any]:
@@ -9,7 +9,7 @@ def compare_uploads(upload_id_a: str, upload_id_b: str) -> Dict[str, Any]:
     sessions_b = get_sessions(upload_id_b)
     
     details = []
-    # Bug 15 fix: Provide clear diagnostics if data is missing
+    # Return explicit diagnostics when either analysis is unavailable.
     if not parties_a or not parties_b:
         details.append("Cannot compare: One or both cases have not been analyzed yet. Please run the analysis pipeline on both cases.")
         return {
@@ -27,7 +27,7 @@ def compare_uploads(upload_id_a: str, upload_id_b: str) -> Dict[str, Any]:
         details.append(f"Found {len(common_ips)} common remote IPs.")
         
         for ip in common_ips:
-            # Bug 15 fix: Distinguish P2P from infrastructure
+            # Keep direct peers separate from infrastructure endpoints.
             is_infra = False
             for p in parties_a:
                 if p['remote_ip'] == ip and p.get('confidence') in ('high', 'infrastructure') and p.get('party_type') == 'client_to_server':
@@ -66,7 +66,7 @@ def compare_uploads(upload_id_a: str, upload_id_b: str) -> Dict[str, Any]:
         'details': " ".join(details)
     }
     
-    # Bug 15 fix: Persist comparison results
+    # Persist the reproducible comparison summary.
     conn = _connect()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS correlation_results (

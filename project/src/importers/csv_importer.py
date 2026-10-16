@@ -47,7 +47,7 @@ def process_csv_to_whatsapp_packets(csv_path: str) -> Tuple[Dict[str, Any], List
         burst_threshold=1.0
     )
     
-    # Bug 6 fix: Enrich CSV packets with classification fields so insert succeeds
+    # Normalize classification fields required by persistence.
     for flow in flows:
         for p in flow["packets"]:
             p["whatsapp_confidence"] = "imported"

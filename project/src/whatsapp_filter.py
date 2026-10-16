@@ -1,56 +1,19 @@
-"""
-whatsapp_filter.py: Classifies flows as WhatsApp based on domains, IP ranges, and behavior.
+"""Classify flows from domain, address, port, and traffic-shape evidence.
 
-Parameter sources:
-  - Domain/port table, SoftLayer AS 36351, OS-specific flow timeouts,
-    chat/media flow size+duration footprints: Fiadino, Schiavone, Casas,
-    "Vivisecting WhatsApp in Cellular Networks: Servers, Flows, and
-    Quality of Experience," TMA 2015 (peer-reviewed, ~150M real flows).
-  - STUN 86-byte signature: confirmed independently in a separate
-    real-capture study; cross-check via the magic-cookie parse, not
-    frame length alone (frame length is link-type-dependent - see
-    packet_parser.py's is_stun_binding logic).
-  - VoIP bitrate thresholds (12kbps/8kbps): NOT sourced from the above
-    paper (its dataset predates WhatsApp voice calling by over a year).
-    Plausible given Opus's typical bitrate range, but unvalidated -
-    gated behind a real validation-report check (see
-    `_voip_thresholds_validated()` below), not a hand-editable constant.
-
-Fix log (this revision — permanent fix pass):
-  1. VoIP-validation gate is now read from a validation report file on
-     disk, produced only by scripts/validate_against_labels.py.
-  2. Burst intensity is now computed per-burst, not per-flow.
-  3. ConfirmedServerRegistry is scoped per pcap_id/upload_id.
-  4. Domain matching now checks label boundaries.
-  5. SNI-derived sub-activity and port-derived activity are namespaced.
-  6. [NEW] Acceptance gate: is_whatsapp_anchored() must be satisfied before
-     guess_media_type() is invoked. Unanchored flows → 'unclassified'.
-  7. [NEW] video_call detection removes the >3x asymmetry requirement.
-     Detection now relies on sustained high bitrate + median packet size.
-  8. [NEW] mmi*/mms* CDN flows classified as 'media_transfer' (unified)
-     instead of forcing an arbitrary 500 KB audio/photo split. mmv* stays
-     video. Only flows where mmv* SNI is present are labelled 'video'.
-  9. [NEW] TCP 5222 port activity renamed 'xmpp_multiplex' to reflect that
-     the FunXMPP stream carries both text chat AND call setup signaling.
-     resolve_final_label() respects this and defaults to 'call_signaling'
-     for undecorated xmpp_multiplex flows.
-  10.[NEW] Size-based fallback (< 10 KB → 'message', etc.) is ONLY applied
-     when cidr_confirmed=True. Non-Meta, non-SNI flows → 'unclassified'.
-  11.[NEW] chat_signaling 'message' return requires a domain or CIDR anchor;
-     unanchored TCP 5222 noise → 'unclassified'.
-  12.[NEW] call_stream_unresolved is preserved as a valid forensic state.
-     It surfaces in the UI with the badge 'Encrypted Call (Unanchored)'.
-     It is NOT force-resolved to voice_call based on duration alone.
+Domain, port, timeout, and flow-footprint rules are based in part on Fiadino,
+Schiavone, and Casas, "Vivisecting WhatsApp in Cellular Networks" (TMA 2015).
+STUN recognition requires protocol evidence such as the RFC 5389 magic cookie;
+frame length alone is never treated as proof. Bitrate-based VoIP labels are an
+experimental heuristic and do not have a reproducible accuracy score here.
 """
 
 import re
 import ipaddress
-import json
 import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
-from src.traffic_utils import extract_bursts, extract_bursts_with_duration
+from src.traffic_utils import extract_bursts_with_duration
 
 # ---------------------------------------------------------------------------
 # Domain lists (reused by geolocation.py for rDNS verification)
@@ -83,7 +46,7 @@ def is_likely_call_media_port(port: Optional[int], protocol_type: Optional[str])
         return False
     return 1024 <= port <= 65535
 
-# VoIP bitrate thresholds - see _voip_thresholds_validated() for the gate
+# Experimental VoIP bitrate thresholds; deployment can disable them by environment.
 _VOIP_THRESHOLD_KBPS = 12.0   # sustained above → voice_call
 _VIDEO_THRESHOLD_KBPS = 50.0  # sustained above + large packets → video_call
 _SIGNALING_MAX_KBPS = 8.0     # mean below → call_signaling
@@ -91,7 +54,7 @@ _WINDOW_SECONDS = 5.0
 _WINDOW_SLIDE_STEP = 1.0
 _SUSTAINED_FRACTION = 0.5     # fraction of windows above threshold
 
-# Fix A: Video detection by packet size, not asymmetry ratio.
+# Video detection uses sustained bitrate and packet size, not direction asymmetry.
 # SRTP-wrapped video frames: 500–1400 bytes.
 # Opus voice payloads: 20–120 bytes.
 # A median > 400 bytes in sustained high-bitrate flows = video.
@@ -119,7 +82,7 @@ OS_MEDIA_TIMEOUT_SECONDS = {
 
 # SNI sub-activity patterns - ordered by specificity (most specific first).
 #
-# DESIGN NOTE (Fix C / Fix 8):
+# Media CDN labels remain conservative because hostnames carry mixed content.
 #   mmv*.whatsapp.net  → 'video'          (video CDN — unambiguous)
 #   mmi*/mms*.whatsapp.net → 'media_transfer'  (photos, voice notes, docs;
 #       cannot be distinguished by size alone — unified label prevents the
@@ -136,58 +99,15 @@ _SNI_PATTERNS: List[Tuple[re.Pattern, str]] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Fix #1: VoIP-threshold validation gate is now an artifact check, not a
-# hand-editable constant.
-# ---------------------------------------------------------------------------
-_VALIDATION_REPORT_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "validation", "voip_validation_report.json"
-)
+def _experimental_voip_heuristics_enabled() -> bool:
+    """Return whether the backward-compatible bitrate heuristic is enabled."""
+    return os.environ.get(
+        "WA_ENABLE_EXPERIMENTAL_VOIP_HEURISTICS", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _voip_thresholds_validated() -> bool:
-    """Returns True only if scripts/validate_against_labels.py has
-    actually written a validation report confirming the VoIP thresholds
-    were checked against labeled captures. There is deliberately no
-    hardcoded `True` anywhere in this file for this - a hand-edited
-    constant with no backing evidence is exactly the failure mode this
-    function replaces. To "validate" these thresholds, run the
-    validation script; don't edit this file.
-
-    Expected report format (written by the validation script):
-        {"voip_thresholds_validated": true, "f1_score": 0.87, "date": "..."}
-    """
-    if not os.path.exists(_VALIDATION_REPORT_PATH):
-        return False
-    try:
-        with open(_VALIDATION_REPORT_PATH) as f:
-            report = json.load(f)
-        return bool(report.get("voip_thresholds_validated", False))
-    except (json.JSONDecodeError, OSError) as e:
-        logging.warning(f"Could not read VoIP validation report: {e}")
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Fix #3: confirmed-server tracking is now per-case, not a module global.
-#
-# MIGRATION NOTE FOR CALLERS: previously, `seed_confirmed_servers(ip)` and
-# `check_inference_matching(server_ip)` used an implicit module-level
-# global shared across every upload processed by this process. That meant
-# a server IP confirmed WhatsApp in one case silently raised confidence
-# for the same IP in a totally unrelated later case, and the set reset to
-# empty on every process restart with no persistence to DB-2.
-#
-# Callers (pipeline.py) must now:
-#   1. Create one `ConfirmedServerRegistry` per pipeline run (per
-#      pcap_id/upload_id) - do not share one instance across uploads.
-#   2. Load/save it from DB-2's `geo_cache`-adjacent storage if you want
-#      confirmed servers to persist across re-runs of the SAME case (not
-#      across different cases).
-#   3. Pass the registry instance explicitly into
-#      `check_inference_matching(server_ip, registry)` and
-#      `registry.seed(server_ip)` instead of the old free functions.
-# ---------------------------------------------------------------------------
+# Confirmed-server evidence is scoped to one pipeline run. Callers must pass a
+# registry explicitly and must never reuse it across unrelated uploads.
 @dataclass
 class ConfirmedServerRegistry:
     """Tracks server IPs confirmed as WhatsApp within ONE case (one
@@ -276,7 +196,7 @@ def check_cidr_matching(server_ip: Optional[str]) -> Tuple[str, List[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Fix #4: domain matching with proper label-boundary check.
+# Domain matching enforces label boundaries.
 # ---------------------------------------------------------------------------
 def _domain_matches_suffix(domain: str, suffix: str) -> bool:
     """True only if `domain` IS `suffix` or is a proper subdomain of it.
@@ -295,7 +215,7 @@ def check_domain_matching(
     media_generic, graph_api, whatsapp_generic, or None. This tag is
     ONLY ever derived from the SNI pattern table - it is a distinct,
     stronger-evidence signal from `check_port_matching()`'s
-    `port_activity` output (see Fix #5). Do not merge the two into one
+    `port_activity` output. Do not merge the two into one
     field downstream; keep them namespaced so a reader can tell whether
     a label came from an observed hostname or an inferred port.
     """
@@ -322,14 +242,14 @@ def check_domain_matching(
 
 
 # ---------------------------------------------------------------------------
-# Fix #5: port-based activity kept explicitly separate from SNI sub-activity.
+# Port-based activity remains separate from SNI-derived sub-activity.
 # ---------------------------------------------------------------------------
 def check_port_matching(
     server_port: Optional[int], protocol_type: Optional[str]
 ) -> Tuple[str, List[str], Optional[str]]:
     """Return protocol-aware confidence from the normalized server port only.
 
-    Port activity labels (Fix F / Fix 9):
+    Port activity labels:
       'dns_resolution'   — Port 53; infrastructure only.
       'xmpp_multiplex'   — TCP 5222/5223/5228/4244/5242; FunXMPP stream
                            carries BOTH text chat and call setup. Not
@@ -343,7 +263,7 @@ def check_port_matching(
     if server_port in DNS_PORTS:
         return "none", ["port_dns"], "dns_resolution"
     if server_port in WHATSAPP_CHAT_PORTS:
-        # Fix F: renamed from 'chat_signaling' to 'xmpp_multiplex'.
+        # These chat ports carry multiplexed traffic.
         # TCP 5222 carries FunXMPP which multiplexes text chat, call
         # setup offers, STUN candidates, and presence — not text-only.
         return "high", ["port_chat"], "xmpp_multiplex"
@@ -377,7 +297,7 @@ def resolve_final_label(
     3. Bitrate / burst analysis result (media_guess)
     4. Unclassified fallthrough
 
-    Fix F / Fix 9: xmpp_multiplex replaces the old 'chat_signaling' port_activity.
+    xmpp_multiplex represents a transport shared by chat and call setup.
     The FunXMPP stream on TCP 5222/5223 carries both text chat AND call
     setup offers (<call><offer>). Without decryption we cannot split the two,
     so the conservative label is 'call_signaling' (superset). Only when the
@@ -388,7 +308,7 @@ def resolve_final_label(
     if port_activity == "dns_resolution":
         return "dns"
 
-    # 2. xmpp_multiplex (TCP 5222/5223/5228/4244/5242) — Fix F
+    # 2. Multiplexed FunXMPP transport on known TCP ports.
     # FunXMPP is a multiplexed channel: text chat + call signaling.
     # Cannot collapse to 'message' without payload inspection.
     if port_activity == "xmpp_multiplex":
@@ -440,9 +360,8 @@ def resolve_activity_labels(
 ) -> Dict[str, Optional[str]]:
     """Combines the two activity signals into a display-ready dict.
 
-    Fix F: xmpp_multiplex is a valid port_activity value (replaces old
-    'chat_signaling'). Kept as-is here so the DB stores the accurate
-    technical value. UI label mapping is in app.py's _MEDIA_LABEL_MAP.
+    xmpp_multiplex remains a distinct technical value in persistence. The UI
+    maps it to an analyst-facing description.
     """
     if port_activity == "dns_resolution":
         return {
@@ -501,7 +420,7 @@ def resolve_timeout(os_hint: str, is_media_flow: bool) -> float:
 def _median_packet_size(packets: List[Dict[str, Any]]) -> float:
     """Median payload length across packets. Used to separate video_call
     (large SRTP frames 500–1400 B) from voice_call (Opus 20–120 B).
-    Fix A: replaces the unreliable >3x directional asymmetry ratio."""
+    Symmetric media is valid, so directional asymmetry is not required."""
     sizes = sorted(p.get('length', 0) for p in packets if p.get('length'))
     if not sizes:
         return 0.0
@@ -514,7 +433,7 @@ def is_whatsapp_anchored(
     port_activity: Optional[str],
     cidr_confirmed: bool,
 ) -> bool:
-    """Acceptance gate (Fix 6): returns True only if this flow has at least
+    """Return True only if this flow has at least
     one verified WhatsApp anchor BEFORE media guessing is attempted.
 
     Anchors (in descending evidence strength):
@@ -552,7 +471,7 @@ def detect_voip_by_bitrate(packets: List[Dict[str, Any]]) -> Optional[str]:
       'call_signaling'  — mean < 8 kbps
       None              — insufficient data (flow < 5 s)
 
-    Fix A: video_call detection no longer requires a >3x directional
+    Video-call detection no longer requires a directional
     asymmetry ratio.  In a normal 2-way video call both participants
     transmit video simultaneously (ratio ≈ 1.0–1.5).  The asymmetry
     requirement was correctly identifying 1-way screen shares, but
@@ -560,12 +479,11 @@ def detect_voip_by_bitrate(packets: List[Dict[str, Any]]) -> Optional[str]:
     (SRTP video frames ≫ Opus voice payloads) is the replacement
     discriminator and applies equally to symmetric and asymmetric calls.
     """
-    if not _voip_thresholds_validated():
+    if not _experimental_voip_heuristics_enabled():
         logging.debug(
-            "VoIP bitrate thresholds (12/8 kbps) are unvalidated against "
-            "labeled data - run scripts/validate_against_labels.py to "
-            "confirm before trusting call/signaling labels."
+            "Experimental VoIP bitrate classification is disabled."
         )
+        return None
     if not packets:
         return None
     timestamps = [p['timestamp'] for p in packets if p.get('timestamp') is not None]
@@ -612,7 +530,7 @@ def detect_voip_by_bitrate(packets: List[Dict[str, Any]]) -> Optional[str]:
 
     mean_br = sum(window_bitrates) / len(window_bitrates)
 
-    # Fix A: video detection — sustained high bitrate + large median packet size.
+    # Video requires sustained high bitrate and a large median packet size.
     # No asymmetry ratio: symmetric 2-way calls are correctly classified.
     sustained_video = sum(1 for b in window_bitrates if b > _VIDEO_THRESHOLD_KBPS)
     if sustained_video / len(window_bitrates) > _SUSTAINED_FRACTION:
@@ -646,7 +564,7 @@ def guess_media_type(
     """
     Burst-aware media type classification.
 
-    ACCEPTANCE GATE (Fix 6): This function must ONLY be called for flows
+    This function must only be called for flows
     that satisfy is_whatsapp_anchored(). The pipeline enforces this; the
     gate is also re-checked internally for defense in depth.
 
@@ -654,16 +572,16 @@ def guess_media_type(
       1. DNS infrastructure signal → 'dns'
       2. is_whatsapp_anchored() gate → 'unclassified' if fails
       3. SNI-derived sub-activity (strongest per-flow evidence)
-      4. xmpp_multiplex port handling (Fix F)
+      4. xmpp_multiplex port handling
       5. UDP call-media paths (CIDR-confirmed, bitrate-gated)
       6. Burst intensity heuristic (TCP CDN transfers)
-      7. CIDR-gated size fallback (Fix B) — only if cidr_confirmed
+      7. CIDR-gated size fallback — only if cidr_confirmed
 
-    Fix C: 'photo_audio' SNI replaced by 'media_transfer' (unified CDN label
+    `media_transfer` is the unified CDN label
     for mmi*/mms* servers). No 500 KB audio/photo split — that threshold
     misclassified HD photos and PDF documents as voice notes.
 
-    Fix D: 'message' fallback now requires a domain or CIDR anchor.
+    The `message` fallback requires a domain or CIDR anchor.
     """
     # ── Gate 1: DNS infrastructure — never user activity ──────────────────
     if port_activity == "dns_resolution":
@@ -683,7 +601,7 @@ def guess_media_type(
         return 'video'
 
     if sni_sub_activity == 'media_transfer':
-        # Fix C: mmi*/mms* CDN carries photos, voice notes, and documents.
+        # mmi*/mms* CDN hosts carry photos, voice notes, and documents.
         # Cannot be split by size alone — use burst shape as discriminator.
         # Voice notes (Opus ~32 kbps): uniform low-rate stream, small total.
         # Photos / PDFs: burst-heavy, potentially very large.
@@ -702,14 +620,14 @@ def guess_media_type(
         return 'audio' if total_bytes < 200_000 else 'photo'
 
     if sni_sub_activity == 'chat_control':
-        # c/d/e*.whatsapp.net — text CDN. Fix D: anchor confirmed via SNI.
+        # c/d/e*.whatsapp.net is an SNI-confirmed text CDN.
         return 'message'
 
     # ── Gate 4: xmpp_multiplex (TCP 5222/5223/5228/4244/5242) ─────────────
-    # Fix F: FunXMPP carries both text chat and call setup.
+    # FunXMPP carries both text chat and call setup.
     # Handled in resolve_final_label(); return conservative placeholder.
     if port_activity == "xmpp_multiplex":
-        # Fix D: only tag as 'message' if we have a CIDR or SNI anchor.
+        # Tag as message only when a CIDR or SNI anchor exists.
         # Unanchored TCP 5222 could be any XMPP client (Jabber, IoT, etc.).
         if cidr_confirmed or sni_sub_activity is not None:
             return "message"    # will be re-evaluated in resolve_final_label
@@ -837,7 +755,7 @@ def guess_media_type(
             return 'message'
 
     # ── Gate 8: Size-based fallback — ONLY if Meta CIDR confirmed ─────────
-    # Fix B: Generic HTTPS traffic (banking, CDNs, OS updates) spans the
+    # Generic HTTPS traffic (banking, CDNs, OS updates) spans the
     # same 10 KB–1 MB range as WhatsApp media. Without a CIDR anchor,
     # applying size heuristics floods forensic reports with false positives.
     if not cidr_confirmed:
@@ -859,7 +777,7 @@ def guess_media_type(
         return 'message'
 
     if total_bytes < 10_000:
-        # Fix D: small flow on confirmed Meta IP — could be keep-alive or
+        # A small flow on a confirmed Meta IP could be keep-alive or
         # tiny control message. Label 'message' only when CIDR-anchored.
         return 'message'
     if total_bytes < 100_000:

@@ -4,7 +4,7 @@ pcap_reader.py: A pure-standard-library pcap and pcapng file reader.
 
 import struct
 import io
-from typing import Generator, Tuple, List, Optional
+from typing import Generator, Tuple, List
 from dataclasses import dataclass
 
 # --- Exceptions ---
@@ -88,7 +88,7 @@ def _read_classic_pcap(stream: io.BufferedIOBase, first_4: bytes) -> Generator[T
         if not buf:
             break
         if len(buf) < 16:
-            # Bug 11 fix (truncated EOF): partial packet record at end of file;
+            # A partial packet record at EOF is a truncated capture.
             # yield all valid packets parsed so far rather than crashing.
             break
         
@@ -131,7 +131,7 @@ def _read_pcapng(stream: io.BufferedIOBase) -> Generator[Tuple[float, int, bytes
             total_len = struct.unpack(f"{endian}I", buf[4:8])[0]
             # Skip rest of SHB body and trailing length
             _read_exactly(stream, total_len - 16)
-            # Bug 11 fix (multi-SHB): clear interface list on each new section so
+            # Clear interfaces at each section header because IDs are section-local.
             # subsequent interface IDs (which reset to 0) point to THIS section's
             # interface descriptions, not a previous section's.
             interfaces.clear()
@@ -186,7 +186,7 @@ def _read_pcapng(stream: io.BufferedIOBase) -> Generator[Tuple[float, int, bytes
             # Layout: if_id(2) drops(2) ts_high(4) ts_low(4) incl_len(4) orig_len(4)
             # That is 16 bytes of fixed header; packet data starts at offset 20
             # (orig_len at bytes 16..19 must be skipped).
-            # Bug 11 fix: was body[16:…] which included orig_len bytes as packet data.
+            # Enhanced-packet data begins after interface, timestamp, and length fields.
             if_id, drops, ts_high, ts_low, incl_len = struct.unpack(f"{endian}HHIII", body[:16])
             
             if if_id >= len(interfaces):

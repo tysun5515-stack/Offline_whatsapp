@@ -24,7 +24,7 @@
         <div>
           <h4 class="font-semibold text-gray-800 group-hover:text-blue-600 transition-colors">1. Register New Captures</h4>
           <p class="text-xs text-gray-500 mt-1 mb-3">Upload raw PCAP or PCAPNG files directly into the platform.</p>
-          <a href="{{ url_for('interface1') }}" class="text-sm font-medium text-blue-600 hover:text-blue-700">Go to Upload Evidence &rarr;</a>
+          <a href="{{ url_for('uploads') }}" class="text-sm font-medium text-blue-600 hover:text-blue-700">Go to Upload Evidence &rarr;</a>
         </div>
       </div>
     </div>
@@ -108,7 +108,7 @@
   </div>
 </div>
 
-<!-- â”€â”€ Charts Row 1 â”€â”€ -->
+<!-- Traffic and map charts -->
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
   <!-- Line Chart: Traffic Over Time -->
   <div class="bg-white p-5 rounded-xl shadow-sm border border-gray-100 flex flex-col">
@@ -162,7 +162,7 @@
   </div>
 </div>
 
-<!-- â”€â”€ Charts Row 2 â”€â”€ -->
+<!-- Classification charts -->
 <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
   <!-- Traffic Classification Donut -->
   <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
@@ -287,12 +287,12 @@
         </div>
         <div>
           <div class="text-[9px] text-gray-500" title="Dominant activity aggregated across all packets in this flow">Type</div>
-          <div class="text-[10px] font-bold text-gray-700 truncate px-0.5" title="Dominant activity: {{ top_party.activity or top_party.party_type or 'â€”' }}{% if top_party.media_breakdown %} ({{ top_party.media_breakdown }}){% endif %}">{{ top_party.activity or top_party.party_type or 'â€”' }}</div>
+          <div class="text-[10px] font-bold text-gray-700 truncate px-0.5" title="Dominant activity: {{ top_party.activity or top_party.party_type or '—' }}{% if top_party.media_breakdown %} ({{ top_party.media_breakdown }}){% endif %}">{{ top_party.activity or top_party.party_type or '—' }}</div>
         </div>
         <div>
           <div class="text-[9px] text-gray-500">Confidence</div>
           <div class="text-[10px] font-bold {% if top_party.confidence == 'high' %}text-green-600{% elif top_party.confidence == 'medium' %}text-orange-500{% else %}text-gray-600{% endif %}">
-            {{ (top_party.confidence or 'â€”') | upper }}
+            {{ (top_party.confidence or '—') | upper }}
           </div>
         </div>
       </div>
@@ -335,7 +335,7 @@
   </div>
 </div>
 
-<!-- â”€â”€ Bottom Section â”€â”€ -->
+<!-- Recent analysis details -->
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
   <!-- Recent Parties Table -->
   <div class="bg-white rounded-xl shadow-sm border border-gray-100 lg:col-span-2 flex flex-col overflow-hidden">
@@ -344,7 +344,7 @@
         <i class="fa-brands fa-whatsapp text-green-500 mr-2"></i> Recent WhatsApp Conversations
       </div>
       {% if uploads %}
-      <a class="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center" href="{{ url_for('interface3', capture_from=capture_from, capture_to=capture_to) }}">
+      <a class="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center" href="{{ url_for('analysis', capture_from=capture_from, capture_to=capture_to) }}">
         View All <i class="fa-solid fa-arrow-right ml-1"></i>
       </a>
       {% endif %}
@@ -370,7 +370,7 @@
           {% for p in recent_parties %}
           <tr class="hover:bg-gray-50">
             <td class="px-4 py-2">{{ loop.index }}</td>
-            <td class="px-4 py-2 font-mono text-gray-600">{{ (p.local_ips or '').split(',')[0].strip() or 'â€”' }}</td>
+            <td class="px-4 py-2 font-mono text-gray-600">{{ (p.local_ips or '').split(',')[0].strip() or '—' }}</td>
             <td class="px-4 py-2 font-mono font-medium text-gray-900">{{ p.remote_ip }}</td>
             <td class="px-4 py-2">
               {% set sub = (p.activity or p.party_type or 'other').lower() %}
@@ -387,8 +387,8 @@
             <td class="px-4 py-2">{{ p.packet_count }}</td>
             <td class="px-4 py-2">{{ (p.total_bytes / 1024) | round(1) }} KB</td>
             <td class="px-4 py-2">{{ '%.1f' % (p.duration_s or 0) }}s</td>
-            <td class="px-4 py-2">{{ p.geo_country or 'â€”' }}</td>
-            <td class="px-4 py-2 text-gray-500">{{ p.asn or 'â€”' }}</td>
+            <td class="px-4 py-2">{{ p.geo_country or '—' }}</td>
+            <td class="px-4 py-2 text-gray-500">{{ p.asn or '—' }}</td>
             <td class="px-4 py-2">
               {% if p.confidence == 'high' %}
               <span class="text-green-600 font-bold text-[10px]">HIGH</span>
@@ -397,7 +397,7 @@
               {% elif p.confidence %}
               <span class="text-red-500 font-bold text-[10px]">{{ p.confidence | upper }}</span>
               {% else %}
-              <span class="text-gray-400 text-[10px]">â€”</span>
+              <span class="text-gray-400 text-[10px]">—</span>
               {% endif %}
             </td>
           </tr>
@@ -461,7 +461,7 @@
 <script data-purpose="chart-initialization">
 document.addEventListener("DOMContentLoaded", function () {
 
-  // â”€â”€ 1. Line Chart: Traffic Over Time (dynamic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Traffic over time.
   const ctxLine = document.getElementById('trafficLineChart');
   if (ctxLine) {
     const timelineData = {{ traffic_timeline | tojson }};
@@ -511,7 +511,7 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
-  // â”€â”€ 2. Doughnut: Traffic Classification (dynamic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Traffic classification distribution.
   const ctxClass = document.getElementById('classificationChart');
   if (ctxClass) {
     const mediaData = {{ media_dist | tojson }};
@@ -534,7 +534,7 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
-  // â”€â”€ 3. Doughnut: Protocol Distribution (dynamic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Protocol distribution.
   const ctxProto = document.getElementById('protocolChart');
   if (ctxProto) {
     const protoData = {{ protocol_dist | tojson }};

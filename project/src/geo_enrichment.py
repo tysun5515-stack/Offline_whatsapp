@@ -36,7 +36,10 @@ def enrich_parties(parties: List[Dict[str, Any]], get_geo_fn, upsert_geo_fn) -> 
                     'longitude': geo_new.longitude,
                     'asn': geo_new.asn,
                     'asn_org': geo_new.asn_org,
-                    'rdns_hostname': '__RDNS_NONE__'
+                    'rdns_hostname': '__RDNS_NONE__',
+                    'subdivision': geo_new.subdivision,
+                    'region_code': geo_new.region_code,
+                    'postal_code': geo_new.postal_code
                 })
                 geo = get_geo_fn(remote_ip)
                 
@@ -64,7 +67,7 @@ def enrich_parties(parties: List[Dict[str, Any]], get_geo_fn, upsert_geo_fn) -> 
         party['is_server'] = classification.get('is_server', False)
         party['location_reliable'] = classification.get('location_reliable', True)
         
-        # Bug 2 fix porting: Ensure is_p2p relies on geo_mapping result
+        # P2P status comes from the shared endpoint classification result.
         if classification.get('role_label') == 'Direct Peer':
             party['is_p2p'] = 1
         elif classification.get('caveat_type') == 'relay_server':
@@ -73,6 +76,10 @@ def enrich_parties(parties: List[Dict[str, Any]], get_geo_fn, upsert_geo_fn) -> 
         if geo:
             party['geo_country'] = geo.get('country') or '—'
             party['geo_city'] = geo.get('city') or '—'
+            party['geo_subdivision'] = geo.get('subdivision') or ''
+            party['geo_region_code'] = geo.get('region_code') or ''
+            parts = [c for c in [geo.get('city'), geo.get('subdivision'), geo.get('country')] if c and c not in ('Unknown', '—')]
+            party['display_location'] = ', '.join(dict.fromkeys(parts)) or '—'
             party['asn_org'] = geo.get('asn_org') or '—'
             party['asn'] = geo.get('asn') or '—'
             party['rdns'] = geo.get('rdns_hostname')
@@ -87,6 +94,8 @@ def enrich_parties(parties: List[Dict[str, Any]], get_geo_fn, upsert_geo_fn) -> 
         else:
             party.update({
                 'geo_country': '—', 'geo_city': '—',
+                'geo_subdivision': '', 'geo_region_code': '',
+                'display_location': '—',
                 'asn_org': '—', 'asn': '—',
                 'remote_lat': None, 'remote_lon': None,
                 'latitude': None, 'longitude': None,
@@ -100,7 +109,10 @@ def enrich_parties(parties: List[Dict[str, Any]], get_geo_fn, upsert_geo_fn) -> 
                 party['local_lat'] = loc_geo.get('latitude')
                 party['local_lon'] = loc_geo.get('longitude')
                 party['local_geo_city'] = loc_geo.get('city')
+                party['local_geo_subdivision'] = loc_geo.get('subdivision') or ''
                 party['local_geo_country'] = loc_geo.get('country')
+                loc_parts = [c for c in [loc_geo.get('city'), loc_geo.get('subdivision'), loc_geo.get('country')] if c and c not in ('Unknown', '—')]
+                party['local_display_location'] = ', '.join(dict.fromkeys(loc_parts)) or '—'
                 
         # Also do the endpoint_a and endpoint_b specific enrichment for full compatibility
         for side in ('a', 'b'):
@@ -114,7 +126,10 @@ def enrich_parties(parties: List[Dict[str, Any]], get_geo_fn, upsert_geo_fn) -> 
                         'country': side_geo_new.country, 'city': side_geo_new.city,
                         'latitude': side_geo_new.latitude, 'longitude': side_geo_new.longitude,
                         'asn': side_geo_new.asn, 'asn_org': side_geo_new.asn_org,
-                        'rdns_hostname': '__RDNS_NONE__'
+                        'rdns_hostname': '__RDNS_NONE__',
+                        'subdivision': side_geo_new.subdivision,
+                        'region_code': side_geo_new.region_code,
+                        'postal_code': side_geo_new.postal_code
                     })
                     side_geo = get_geo_fn(ip)
             if side_geo:
@@ -122,6 +137,9 @@ def enrich_parties(parties: List[Dict[str, Any]], get_geo_fn, upsert_geo_fn) -> 
                 party[f'endpoint_{side}_lon'] = side_geo.get('longitude')
                 party[f'endpoint_{side}_country'] = side_geo.get('country')
                 party[f'endpoint_{side}_city'] = side_geo.get('city')
+                party[f'endpoint_{side}_subdivision'] = side_geo.get('subdivision') or ''
+                side_parts = [c for c in [side_geo.get('city'), side_geo.get('subdivision'), side_geo.get('country')] if c and c not in ('Unknown', '—')]
+                party[f'endpoint_{side}_display_location'] = ', '.join(dict.fromkeys(side_parts)) or '—'
                 party[f'endpoint_{side}_asn'] = side_geo.get('asn')
                 party[f'endpoint_{side}_asn_org'] = side_geo.get('asn_org')
                 ports = party.get(f'endpoint_{side}_ports') or []
@@ -132,6 +150,8 @@ def enrich_parties(parties: List[Dict[str, Any]], get_geo_fn, upsert_geo_fn) -> 
                     "Approximate network endpoint or infrastructure location; not a person's location."
                 )
             else:
+                party[f'endpoint_{side}_display_location'] = '—'
+                party[f'endpoint_{side}_subdivision'] = ''
                 party[f'endpoint_{side}_role'] = {
                     'local': 'Local endpoint', 'cgnat': 'CGNAT endpoint'
                 }.get(scope, 'Non-geographic endpoint')

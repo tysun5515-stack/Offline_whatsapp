@@ -7,7 +7,7 @@ def process_json_to_whatsapp_packets(json_path: str) -> Tuple[Dict[str, Any], Li
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
-    # Bug 6 fix: Support wrapped dictionary JSON formats (e.g. {"packets": [...]})
+    # Accept both a packet list and the common {"packets": [...]} wrapper.
     if isinstance(data, dict):
         if "packets" in data:
             packet_records = data["packets"]
@@ -27,7 +27,7 @@ def process_json_to_whatsapp_packets(json_path: str) -> Tuple[Dict[str, Any], Li
         burst_threshold=1.0
     )
     
-    # Bug 6 fix: Enrich packets with classification fields so insert succeeds
+    # Normalize classification fields required by persistence.
     for flow in flows:
         for p in flow["packets"]:
             if "whatsapp_confidence" not in p:

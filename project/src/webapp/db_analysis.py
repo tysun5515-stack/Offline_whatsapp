@@ -97,7 +97,10 @@ def init_analysis_db():
             asn          TEXT,
             asn_org      TEXT,
             looked_up_at REAL,
-            rdns_hostname TEXT
+            rdns_hostname TEXT,
+            subdivision  TEXT,
+            region_code  TEXT,
+            postal_code  TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_packets_batch ON whatsapp_packets(batch_id);
@@ -354,6 +357,11 @@ def init_analysis_db():
     ):
         try:
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {column}")
+        except sqlite3.OperationalError:
+            pass
+    for column in ("subdivision TEXT", "region_code TEXT", "postal_code TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE geo_cache ADD COLUMN {column}")
         except sqlite3.OperationalError:
             pass
     # Existing derived rows predate traffic_class.  Their persisted confidence
@@ -994,7 +1002,10 @@ def get_parties(batch_id: str) -> List[Dict[str, Any]]:
 
 
 def get_parties_scope(upload_ids: List[str], start_ts: Optional[float] = None,
-                      end_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+                      end_ts: Optional[float] = None,
+                      activity_group: Optional[str] = None,
+                      limit: Optional[int] = None,
+                      offset: int = 0) -> List[Dict[str, Any]]:
     if not upload_ids:
         return []
     conn = _connect(); marks = ','.join('?' for _ in upload_ids)
@@ -1003,7 +1014,16 @@ def get_parties_scope(upload_ids: List[str], start_ts: Optional[float] = None,
         where.append("last_seen >= ?"); params.append(start_ts)
     if end_ts is not None:
         where.append("first_seen < ?"); params.append(end_ts)
-    rows = conn.execute(f"SELECT * FROM parties WHERE {' AND '.join(where)} ORDER BY packet_count DESC", params).fetchall()
+    if activity_group == 'call':
+        where.append("(sub_activity IN ('voice_call','video_call','call_stream_unresolved','call_signaling') OR is_p2p = 1)")
+    elif activity_group == 'chat':
+        where.append("sub_activity IN ('message','photo','audio','video','media_transfer','xmpp_multiplex')")
+    elif activity_group == 'infra':
+        where.append("(sub_activity NOT IN ('voice_call','video_call','call_stream_unresolved','call_signaling','message','photo','audio','video','media_transfer','xmpp_multiplex') OR sub_activity IS NULL)")
+    sql = f"SELECT * FROM parties WHERE {' AND '.join(where)} ORDER BY packet_count DESC"
+    if limit is not None:
+        sql += f" LIMIT {int(limit)} OFFSET {int(offset)}"
+    rows = conn.execute(sql, params).fetchall()
     conn.close(); return [dict(row) for row in rows]
 
 
@@ -1018,12 +1038,13 @@ def upsert_geo(ip: str, data: Dict[str, Any]):
     conn = _connect()
     conn.execute(
         """INSERT OR REPLACE INTO geo_cache
-           (ip, country, city, latitude, longitude, asn, asn_org, looked_up_at, rdns_hostname)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+           (ip, country, city, latitude, longitude, asn, asn_org, looked_up_at, rdns_hostname, subdivision, region_code, postal_code)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (ip, data.get('country'), data.get('city'),
          data.get('latitude'), data.get('longitude'),
          data.get('asn'), data.get('asn_org'),
-         data.get('looked_up_at'), data.get('rdns_hostname'))
+         data.get('looked_up_at'), data.get('rdns_hostname'),
+         data.get('subdivision'), data.get('region_code'), data.get('postal_code'))
     )
     conn.commit()
     conn.close()
@@ -1237,3 +1258,49 @@ def get_crypto_summary(batch_id: str) -> Dict[str, Any]:
             summary['pqc_not_observed'] = r['count']
         
     return summary
+
+
+def get_file_packet_metrics(
+    start_ts: Optional[float] = None,
+    end_ts: Optional[float] = None,
+    upload_ids: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+    """Return packet count metrics grouped by filename for the given time/scope bounds."""
+    conn = _connect()
+    time_clause = []
+    params: List[Any] = []
+    if start_ts is not None:
+        time_clause.append("timestamp >= ?")
+        params.append(start_ts)
+    if end_ts is not None:
+        time_clause.append("timestamp < ?")
+        params.append(end_ts)
+    if upload_ids:
+        placeholders = ','.join('?' for _ in upload_ids)
+        time_clause.append(f"upload_id IN ({placeholders})")
+        params.extend(upload_ids)
+
+    where = (" WHERE " + " AND ".join(time_clause)) if time_clause else ""
+    query = f"""
+        SELECT filename, COUNT(*) AS total,
+               SUM(CASE WHEN lower(whatsapp_confidence) IN ('high', 'medium', 'infrastructure') THEN 1 ELSE 0 END) AS wa,
+               SUM(CASE WHEN lower(whatsapp_confidence) = 'unclassified' THEN 1 ELSE 0 END) AS unclassified
+        FROM whatsapp_packets{where} GROUP BY filename
+    """
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_crypto_flows_by_upload_ids(upload_ids: List[str]) -> List[Dict[str, Any]]:
+    """Return crypto flows for a list of upload IDs, ordered by first_seen."""
+    if not upload_ids:
+        return []
+    conn = _connect()
+    marks = ','.join('?' for _ in upload_ids)
+    rows = conn.execute(
+        f'SELECT * FROM crypto_flows WHERE upload_id IN ({marks}) ORDER BY first_seen',
+        upload_ids
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

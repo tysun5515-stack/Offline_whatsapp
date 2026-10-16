@@ -64,7 +64,13 @@ def write_filtered_capture(source_path: str, destination_path: str, packet_numbe
     if output_format == 'pcapng':
         _write_pcapng(destination_path, selected)
     else:
-        _write_pcap(destination_path, selected)
+        try:
+            _write_pcap(destination_path, selected)
+        except ValueError as exc:
+            if 'multiple link types' in str(exc).lower():
+                _write_pcapng(destination_path, selected)
+            else:
+                raise
     # Re-read validation also confirms the output is consumable by this application.
     if sum(1 for _ in read_packets(destination_path)) != len(selected):
         raise ValueError('Filtered capture validation failed: output packet count differs.')

@@ -1,7 +1,7 @@
 'use strict';
 
 /* ================================================================
-   app.js â€” Sidebar state & AJAX helpers for forensic analyzer UI
+   Sidebar state and AJAX helpers for the forensic analyzer UI.
    No frameworks. Vanilla JS only.
    ================================================================ */
 
@@ -113,7 +113,7 @@ function showStatus(el, message, type = 'info') {
   el.classList.remove('hidden');
 }
 
-// â”€â”€ Deletion Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Deletion helpers.
 
 async function deleteBatch(batchId) {
   if (!confirm('Delete this entire case and all associated files? This cannot be undone.')) return;
@@ -135,9 +135,7 @@ async function deleteUpload(uploadId) {
   }
 }
 
-// â”€â”€ Interface 1: Drag & Drop File Upload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-// â”€â”€ Interface 1: Drag & Drop and Multi-mode Upload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Drag-and-drop and multi-mode evidence upload.
 
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('pcap-file-batch');
@@ -287,7 +285,7 @@ if (analyzeBtn) {
 
       try {
         await apiFetch(`/api/analyze${window.location.search}`, { method: 'POST' });
-        showStatus(statusEl, 'Analysis complete. Reloadingâ€¦', 'success');
+        showStatus(statusEl, 'Analysis complete. Reloading…', 'success');
         setTimeout(() => window.location.reload(), 800);
       } catch (e) {
         showStatus(statusEl, 'Error: ' + e.message, 'error');
@@ -296,71 +294,7 @@ if (analyzeBtn) {
   });
 }
 
-// â”€â”€ Interface 4: Deep Analysis & Compare â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-// DEEP_ANALYSIS_DISABLED
-/*
-const runDeepBtn = document.getElementById('btn-run-deep-case');
-if (runDeepBtn) {
-  runDeepBtn.addEventListener('click', async () => {
-    const batchId = runDeepBtn.dataset.batchId;
-    const statusEl = document.getElementById('deep-status');
-
-    await withSpinner(runDeepBtn, async () => {
-      showStatus(statusEl, 'Extracting timelines...', 'info');
-
-      try {
-        await apiFetch(`/api/deep_analyze/${batchId}`, { method: 'POST' });
-        showStatus(statusEl, 'Timeline extraction complete. Reloadingâ€¦', 'success');
-        setTimeout(() => window.location.reload(), 800);
-      } catch (e) {
-        showStatus(statusEl, 'Error: ' + e.message, 'error');
-      }
-    });
-  });
-}
-
-const compareBtn = document.getElementById('btn-run-compare-case');
-if (compareBtn) {
-  compareBtn.addEventListener('click', async () => {
-    const batchIdA = compareBtn.dataset.batchId;
-    const compareSelect = document.getElementById('compare-select');
-    const batchIdB = compareSelect.value;
-
-    if (!batchIdB) {
-      showToast('Please select a case to compare with.', 'warning');
-      return;
-    }
-
-    await withSpinner(compareBtn, async () => {
-      try {
-        const data = await apiFetch(`/api/compare/${batchIdA}/${batchIdB}`);
-
-        const resultsDiv = document.getElementById('compare-results');
-        const scoreSpan = document.getElementById('compare-score');
-        const detailsSpan = document.getElementById('compare-details');
-
-        resultsDiv.classList.remove('hidden');
-        scoreSpan.textContent = data.score.toFixed(1) + '%';
-
-        const scoreColors = {
-          high:   'bg-green-100 text-green-800',
-          medium: 'bg-yellow-100 text-yellow-800',
-          low:    'bg-red-100 text-red-800',
-        };
-        const tier = data.score > 50 ? 'high' : data.score > 0 ? 'medium' : 'low';
-        scoreSpan.className = `px-3 py-1 rounded-full text-sm font-bold ${scoreColors[tier]}`;
-
-        detailsSpan.textContent = data.details;
-      } catch (e) {
-        showToast('Error during comparison: ' + e.message, 'warning');
-      }
-    });
-  });
-}
-*/
-
-// â”€â”€ Interface 2: Forensic Packet Browser Controller â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Forensic packet browser controller.
 
 (function initForensicPacketBrowser() {
   const root = document.getElementById('forensic-browser-root');

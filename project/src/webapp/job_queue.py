@@ -7,6 +7,7 @@ import os
 import json
 import uuid
 import threading
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 
@@ -171,7 +172,10 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                 
             # ── 2. Evidence handling ────────────────────────────────────
             if skip_filter:
-                for _ in packets: pass  # Consume generator to compute stats
+                # Bypass mode: consume packet generator to populate stats, but do not
+                # write filtered captures or populate forensic DB tables because unfiltered
+                # traffic contains mixed non-WhatsApp traffic ineligible for forensic classification.
+                for _ in packets: pass
                 remove_filtered_evidence(upload, status='bypass_no_output')
                 clear_upload_packets(upload_id)
                 outcome_status = 'bypass_no_output'
@@ -194,10 +198,16 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                     os.remove(destination)
                     
                 if packet_numbers:
-                    written = write_filtered_capture(
-                        upload['stored_path'], destination, packet_numbers,
-                        file_format, stats.get('packet_count')
-                    )
+                    try:
+                        written = write_filtered_capture(
+                            upload['stored_path'], destination, packet_numbers,
+                            file_format, stats.get('packet_count')
+                        )
+                    except ValueError as exc:
+                        import logging
+                        logging.warning(f"Failed to write filtered capture for {upload['filename']}: {exc}")
+                        job_data['errors'].append(f"{upload['filename']}: capture: {exc}")
+                        written = 0
                 else:
                     written = 0
                     
@@ -209,7 +219,7 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
                     outcome_status = 'no_whatsapp_match'
                 
             # ── 3. Crypto flows ─────────────────────────────────────────
-            if file_format not in ('json', 'csv'):
+            if not skip_filter and file_format not in ('json', 'csv'):
                 c_flows, c_events = crypto_data
                 if c_flows:
                     insert_crypto_flows(effective_batch_id, upload_id, c_flows, c_events)
@@ -251,13 +261,12 @@ def _process_filter_job_inner(job_id: str, upload_ids: List[str], skip_filter: b
             job_data['stats']['whatsapp_count']    += stats.get('whatsapp_count', 0)
             
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logging.exception("Filter job %s failed for upload %s", job_id, upload_id)
             update_status(upload_id, 'error')
             try:
                 fail_upload_analysis(upload_id, e)
             except Exception:
-                traceback.print_exc()
+                logging.exception("Could not record failed analysis for upload %s", upload_id)
             job_data['errors'].append(f"{upload['filename']}: {str(e)}")
             outcome_status = 'error'
             

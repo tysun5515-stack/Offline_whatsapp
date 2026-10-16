@@ -1,5 +1,4 @@
 import struct
-import binascii
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -141,22 +140,3 @@ def parse_crypto_frames(cleartext: bytes):
             # Other frames, break
             break
     return tls_data
-
-if __name__ == "__main__":
-    from src.pcap_reader import _read_classic_pcap
-    from src.packet_parser import parse_packet
-    import sys
-    import os
-
-    pcap_file = os.path.join(os.path.dirname(__file__), "..", "..", "..", "capture A", "2.pcap")
-    print("Testing QUIC decryption on:", pcap_file)
-    try:
-        with open(pcap_file, 'rb') as f:
-            magic = f.read(4)
-            for ts, net, data in _read_classic_pcap(f, magic):
-                rec = parse_packet(data, net, ts)
-                if rec.get("is_quic"):
-                    udp_payload = data[-rec.get("udp_payload_len", len(data)):] # Hack to get udp payload
-                    # Actually parse_packet doesn't return raw udp, we can modify packet_parser to do so.
-    except Exception as e:
-        print(e)

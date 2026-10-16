@@ -1,15 +1,7 @@
-"""
-flow_builder.py: Reconstructs network flows from packet records and calculates flow summary statistics.
+"""Reconstruct transport flows and calculate flow summary statistics.
 
-Fix log (this revision):
-  1. Flow-inactivity timeout is now resolved per-flow via
-     whatsapp_filter.resolve_timeout(os_hint, is_media_flow), not a single
-     hardcoded 120s applied to every flow regardless of OS or media type.
-  2. `is_media_flow` is inferred from the flow's server-side port.
-  3. Added `session_start_confirmed`: True only if the flow's first
-     captured packet looks like a genuine session start.
-  4. burst_count now comes from the SAME extract_bursts() function
-     that whatsapp_filter.py uses (via traffic_utils.py).
+Timeouts are resolved per flow, and session starts are marked only when the
+first observed packet contains suitable protocol evidence.
 """
 
 import hashlib
@@ -17,7 +9,7 @@ import ipaddress
 from typing import Any, Dict, List, Optional, Tuple, Iterator
 
 from src import whatsapp_filter as wf
-from src.traffic_utils import extract_bursts, extract_bursts_with_duration
+from src.traffic_utils import extract_bursts
 from src.os_fingerprint import detect_os_hint
 
 
@@ -183,7 +175,7 @@ def rebuild_flows(
         dst_port = packet["dst_port"]
         protocol = packet["protocol"]
 
-        # Bug 13 fix: coalesce None ports to 0 so tuple comparison never raises
+        # Coalesce missing ports so endpoint tuple ordering remains stable.
         # TypeError on non-TCP/UDP traffic (ICMP, IGMP, etc.) where ports are None.
         if (src_ip, src_port or 0) < (dst_ip, dst_port or 0):
             key = (src_ip, src_port, dst_ip, dst_port, protocol)
@@ -240,7 +232,7 @@ def rebuild_flows(
         packets = flow["packets"]
         packet_count = len(packets)
 
-        # Bug 1 fix: compute first_seen, last_seen, duration_s from packet timestamps
+        # Derive the observed span from packet timestamps.
         # so that pipeline.py gets accurate flow_duration (was always 1.0s before).
         timestamps = [p["timestamp"] for p in packets if p.get("timestamp") is not None]
         first_seen = min(timestamps) if timestamps else 0.0

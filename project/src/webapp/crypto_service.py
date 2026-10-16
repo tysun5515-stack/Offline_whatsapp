@@ -23,6 +23,10 @@ def enabled():
 
 @contextmanager
 def connect():
+    """Context manager for the analysis database (ANALYSIS_DB_PATH).
+    Crypto report and evidence tables (crypto_reports_v3, crypto_evidence_v3)
+    coexist within the primary analysis DB alongside analysis_flows_v2.
+    """
     c = sqlite3.connect(db.ANALYSIS_DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
     c.executescript('''
