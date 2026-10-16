@@ -1,37 +1,18 @@
 @echo off
-setlocal enabledelayedexpansion
-title WhatsApp Analyzer - Starting...
-color 0B
-
+setlocal
+title WhatsApp Analyzer - Starting
 set "BUNDLE_DIR=%~dp0"
-set "BUNDLE_DIR=%BUNDLE_DIR:~0,-1%"
-set "PROJECT_DIR=%BUNDLE_DIR%\project"
-set "VENV_DIR=%PROJECT_DIR%\.venv"
-
-:: Ensure TShark is on PATH
 set "PATH=%PATH%;C:\Program Files\Wireshark"
 
-:: Check setup has been run
-if not exist "%VENV_DIR%\Scripts\python.exe" (
-    echo  [ERROR] Virtual environment not found!
-    echo          Please run INSTALL.bat first.
+if not exist "%BUNDLE_DIR%project\.venv\Scripts\python.exe" (
+    echo [ERROR] Offline environment not found. Run INSTALL.bat first.
     pause
     exit /b 1
 )
 
-echo.
-echo ============================================================
-echo   WhatsApp Offline Analyzer
-echo   Starting server at http://localhost:5000
-echo   Press Ctrl+C in this window to stop the server.
-echo ============================================================
-echo.
-
-:: Open browser after 3 seconds
-start /b cmd /c "timeout /t 3 /nobreak >nul && start http://localhost:5000"
-
-:: Start Flask app
-cd /d "%PROJECT_DIR%"
-"%VENV_DIR%\Scripts\python.exe" src\webapp\app.py
-
-pause
+echo Starting at http://127.0.0.1:5000 - press Ctrl+C to stop.
+start "" /b cmd /c "timeout /t 3 /nobreak ^>nul ^&^& start http://127.0.0.1:5000"
+call "%BUNDLE_DIR%project\run_offline.cmd"
+set "APP_EXIT=%ERRORLEVEL%"
+if not "%APP_EXIT%"=="0" pause
+exit /b %APP_EXIT%

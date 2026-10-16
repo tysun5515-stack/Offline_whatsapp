@@ -48,6 +48,7 @@ class RepositoryHygieneTests(unittest.TestCase):
                 not path.is_file()
                 or path.suffix.lower() not in TEXT_SUFFIXES
                 or ".venv" in path.parts
+                or "tmp" in path.parts
                 or "node_modules" in path.parts
                 or "vendor" in path.parts
             ):

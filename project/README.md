@@ -41,6 +41,20 @@ are installed. The checked-in GeoLite2 and browser assets are used locally.
 TShark is optional and is discovered from `PATH` or a standard Wireshark
 installation.
 
+For a disconnected target, build the Windows/Python 3.12 x64 archive on a
+connected computer, transfer it, extract it, and run the root `INSTALL.bat`:
+
+```powershell
+.\scripts\build_submission.ps1 -Output whatsapp-offline-win64.zip
+```
+
+On the disconnected computer, extract that archive and run `INSTALL.bat` from
+the extracted bundle root.
+
+The archive contains Python and Wireshark installers, fully pinned hashed
+locks, and a local wheelhouse for both isolated applications. See
+[Pure offline Windows bundle](docs/OFFLINE_BUNDLE.md).
+
 The command-line pipeline remains available:
 
 ```powershell
@@ -87,7 +101,7 @@ companion environment created from `whatsapp_ai_harness/requirements.txt`.
 
 Runtime databases, job state, captures, filtered evidence, caches, and virtual
 environments are intentionally excluded from version control. After committing
-the reviewed source, build a tracked-files-only mentor archive with:
+the reviewed source, build the source plus its verified dependency wheelhouse:
 
 ```powershell
 .\scripts\build_submission.ps1

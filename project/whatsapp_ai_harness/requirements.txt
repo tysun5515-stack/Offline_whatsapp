@@ -1,3 +1,5 @@
+# Direct runtime dependencies for the separate read-only AI companion.
+# Pure offline installs use this folder's fully pinned requirements.lock.txt.
 Flask==3.0.3
 langgraph>=0.6,<2
 reportlab>=4.2,<5

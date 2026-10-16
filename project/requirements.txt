@@ -1,4 +1,7 @@
-# Primary offline analyzer. The optional AI companion has its own requirements file.
+# Direct runtime dependencies for the primary analyzer.
+# Online install: python -m pip install -r requirements.txt
+# Pure offline install: run install_offline.ps1 with requirements.lock.txt
+# and the bundle's wheelhouse. The lock pins all transitive dependencies.
 Flask==3.0.3
 Werkzeug==3.1.8
 Jinja2==3.1.6

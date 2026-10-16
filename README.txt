@@ -14,10 +14,9 @@ NOTE: When move the offline_bundle to another system  delete virtual environment
      - python-3.12.0-amd64.exe
      - Wireshark-x64.exe
 
-   Download them from another machine if not included
-   (due to file size limits on some USB drives):
-     Python:    https://www.python.org/ftp/python/3.12.0/python-3.12.0-amd64.exe
-     Wireshark: https://www.wireshark.org/download.html
+   They are included in this complete bundle. If either file or the
+   "wheels" folder is missing, the bundle is incomplete; do not attempt
+   installation on the disconnected computer.
 
 3. Right-click INSTALL.bat > "Run as Administrator"
    Wait for it to complete (2-5 minutes).
@@ -34,5 +33,9 @@ TROUBLESHOOTING:
 - "TShark not found" error: Re-run INSTALL.bat as Administrator
   to ensure Wireshark is installed.
 - App doesnt open in browser: Manually go to http://localhost:5000
+- Package installation error: Verify the full "wheels" folder was copied.
+- The optional AI companion starts with project\whatsapp_ai_harness\start_harness.cmd.
+  Its deterministic mode is offline. Ollama/model-assisted mode requires a
+  separately installed local Ollama model, but does not require internet.
 
 ========================================================

@@ -39,6 +39,11 @@ DB_PATH = ANALYSIS_DB_PATH
 # Timeout in seconds for reverse DNS lookups
 RDNS_TIMEOUT = 2.0
 
+
+def _offline_mode() -> bool:
+    """Return whether runtime network lookups are disabled by the launcher."""
+    return os.environ.get("WA_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
+
 def _get_db_conn() -> sqlite3.Connection:
     """Connect to the geo cache database, ensuring the geo_cache table exists."""
     conn = sqlite3.connect(ANALYSIS_DB_PATH)
@@ -90,6 +95,11 @@ def reverse_dns(ip: str) -> Optional[str]:
     Returns:
         The rDNS hostname if found, or None if the lookup fails/times out.
     """
+    # The offline bundle must never attempt DNS. Keep the normal source-run
+    # behavior available when WA_OFFLINE is not enabled.
+    if _offline_mode():
+        return None
+
     # 1. Skip private IPs — rDNS on private ranges is meaningless for our use case
     try:
         if ipaddress.ip_address(ip).is_private:

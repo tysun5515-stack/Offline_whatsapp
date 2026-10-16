@@ -45,6 +45,13 @@ whatsapp_ai_harness\.venv\Scripts\python -m whatsapp_ai_harness.serve
 
 Open `http://127.0.0.1:5055`. Route A remains available without Ollama.
 
+For a disconnected installation, use the project-root
+`scripts\build_submission.ps1` on a connected Windows/Python 3.12 x64 machine,
+then run the bundle-root `INSTALL.bat` from the extracted archive. The companion
+keeps its own virtual environment but uses the shared bundled wheelhouse.
+Ollama and model weights remain optional external components and are not
+redistributed.
+
 From inside the `whatsapp_ai_harness` directory, use the directory-safe
 Windows launcher instead:
 

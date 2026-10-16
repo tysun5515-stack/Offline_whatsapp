@@ -94,24 +94,29 @@ if exist "%VENV_DIR%\Scripts\python.exe" (
 
 :: ??? STEP 4: Install Packages Offline ????????????????????????????????????????
 echo.
-echo [4/5] Installing Python packages from local wheels (100%% offline)...
-"%VENV_DIR%\Scripts\pip.exe" install --no-index --find-links="%WHEELS_DIR%" -r "%PROJECT_DIR%\requirements.txt" -q
+echo [4/5] Installing all pinned packages from local wheels (100%% offline)...
+PowerShell.exe -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%\install_offline.ps1" -Python "!PYTHON_EXE!"
 if !errorlevel! neq 0 (
-    echo  [ERROR] Package installation failed. Showing details...
-    "%VENV_DIR%\Scripts\pip.exe" install --no-index --find-links="%WHEELS_DIR%" -r "%PROJECT_DIR%\requirements.txt"
+    echo  [ERROR] Offline package installation or verification failed.
     pause & exit /b 1
 )
-echo       All packages installed.
+echo       Primary analyzer and optional AI companion installed.
 
 :: ??? STEP 5: Verify ??????????????????????????????????????????????????????????
 echo.
 echo [5/5] Verifying packages...
-"%VENV_DIR%\Scripts\python.exe" -c "import flask, pyshark, matplotlib, geoip2, plotly, scipy, numpy, cryptography; print('      All imports OK')"
+cd /d "%PROJECT_DIR%"
+"%VENV_DIR%\Scripts\python.exe" -c "from src.webapp.app import create_app; create_app(); print('      Primary analyzer OK')"
 if !errorlevel! neq 0 (
-    echo  [WARNING] Verification failed - check errors above.
-) else (
-    echo       All OK!
+    echo  [ERROR] Primary analyzer verification failed.
+    pause & exit /b 1
 )
+"%PROJECT_DIR%\whatsapp_ai_harness\.venv\Scripts\python.exe" -c "from whatsapp_ai_harness.app import create_app; create_app(); print('      AI companion OK')"
+if !errorlevel! neq 0 (
+    echo  [ERROR] AI companion verification failed.
+    pause & exit /b 1
+)
+echo       All checks passed.
 
 :: ??? Done ????????????????????????????????????????????????????????????????????
 echo.
