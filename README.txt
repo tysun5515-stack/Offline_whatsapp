@@ -27,15 +27,3 @@ EVERY TIME YOU WANT TO RUN THE APP:
 2. A browser window will open at http://localhost:5000
 3. To stop the app, close the black command window.
 
-TROUBLESHOOTING:
------------------
-- "Python not found" error: Re-run INSTALL.bat as Administrator.
-- "TShark not found" error: Re-run INSTALL.bat as Administrator
-  to ensure Wireshark is installed.
-- App doesnt open in browser: Manually go to http://localhost:5000
-- Package installation error: Verify the full "wheels" folder was copied.
-- The optional AI companion starts with project\whatsapp_ai_harness\start_harness.cmd.
-  Its deterministic mode is offline. Ollama/model-assisted mode requires a
-  separately installed local Ollama model, but does not require internet.
-
-========================================================
