@@ -21,6 +21,9 @@ NOTE: When move the offline_bundle to another system  delete virtual environment
 3. Right-click INSTALL.bat > "Run as Administrator"
    Wait for it to complete (2-5 minutes).
 
+For Sample Pcap files -
+https://drive.google.com/file/d/1MOLEQ4JBMMzBO-YyNJQe9gpxea8Lsp-Q/view?usp=sharing
+
 EVERY TIME YOU WANT TO RUN THE APP:
 -------------------------------------
 1. Double-click RUN.bat
